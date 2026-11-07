@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="MockBackendApplication" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="io.github.nandha1306.mockbackend.MockBackendApplication" />
+    <module name="mock-backend" />
+    <option name="WORKING_DIRECTORY" value="$MODULE_WORKING_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

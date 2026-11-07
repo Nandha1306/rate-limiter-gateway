@@ -1,0 +1,17 @@
+spring:
+  config:
+    import: optional:classpath:application-local.yml
+  application:
+    name: gateway
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
