@@ -497,18 +497,18 @@ Plain "depends on" doesn't wait for Redis to be ready, which is why the healthch
 Each phase has a **Done when** line. Don't move on until it's true.
 
 ### Phase 0: Setup (Day 1)
-- [ ] Public GitHub repo, README stub, NOTES.md
-- [ ] Generate gateway and mock-backend projects
-- **Done when:** both apps start locally.
+- [x] Public GitHub repo, README stub, NOTES.md
+- [x] Generate gateway and mock-backend projects
+- **Done when:** both apps start locally. ✅
 
 ### Phase 1: In-memory token bucket (Days 1-4)
-- [ ] Limiter interface, result, limit spec
-- [ ] Thread-safe in-memory token bucket (monotonic clock, synchronized)
-- [ ] Unit tests: refill over time, burst up to capacity, retry-after value
-- [ ] Concurrency test: 100 threads, 1000 attempts, bucket of 100 with near-zero refill. Expect exactly 100 allowed
+- [x] Limiter interface, result, limit spec
+- [x] Thread-safe in-memory token bucket (monotonic clock, synchronized)
+- [x] Unit tests: refill over time, burst up to capacity, retry-after value
+- [x] Concurrency test: 100 threads, 1000 attempts, bucket of 100 with near-zero refill. Expect exactly 100 allowed
 - [ ] Remove the synchronization, watch the test fail, write down why in NOTES.md
 - **Learn:** race conditions, atomicity, ConcurrentHashMap, CAS vs locks
-- **Done when:** the concurrency test passes reliably 20 runs in a row.
+- **Done when:** the concurrency test passes reliably 20 runs in a row. ✅ (`@RepeatedTest(20)`, all green)
 
 ### Phase 2: Mock backend, filters and proxy (Days 5-9)
 - [ ] Mock backend with all endpoints and the chaos endpoint
