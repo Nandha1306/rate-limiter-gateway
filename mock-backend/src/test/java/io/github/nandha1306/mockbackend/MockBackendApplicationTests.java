@@ -1,13 +1,12 @@
-package rate_limiter_gateway;
+package io.github.nandha1306.mockbackend;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class ApplicationTests {
+class MockBackendApplicationTests {
 
 	@Test
 	void contextLoads() {
 	}
-
 }

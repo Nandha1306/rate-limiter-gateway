@@ -1,10 +1,21 @@
-HELP.md
+### Build output ###
 target/
-.mvn/wrapper/maven-wrapper.jar
+out/
+build/
 !**/src/main/**/target/
 !**/src/test/**/target/
+!**/src/main/**/build/
+!**/src/test/**/build/
+.mvn/wrapper/maven-wrapper.jar
+HELP.md
 
-### STS ###
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse / STS ###
 .apt_generated
 .classpath
 .factorypath
@@ -13,23 +24,36 @@ target/
 .springBeans
 .sts4-cache
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
-
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
 /dist/
 /nbdist/
 /.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
 
 ### VS Code ###
 .vscode/
 
-D:\rate-limiter-gateway\src\main\resources\application.yaml
+### Local config and secrets ###
+application-local.yml
+application-local.yaml
+application-local.properties
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+
+### AI assistant local settings ###
+.claude/settings.local.json
+
+### Logs and JVM crash files ###
+*.log
+hs_err_pid*
+replay_pid*
+
+### OS ###
+.DS_Store
+Thumbs.db
+desktop.ini
