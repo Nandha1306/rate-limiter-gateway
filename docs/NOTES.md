@@ -270,3 +270,41 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
   - **Three separate Redis clients (standing in for 3 gateways), 60 threads, 1020 attempts on one key, capacity 100 → exactly 100 allowed**, 5 runs out of 5. The refill is 1 token per hour, so the plan section 15 bound (burst + rate × elapsed) is exactly 100 for a test lasting seconds.
   - `@Testcontainers(disabledWithoutDocker = true)`: skipped when Docker is off, and confirmed **not** skipped here (10 run, 0 skipped).
 - **Bug hit: script file named `token_bucker.lua` and empty.** The Java side loads `lua/token_bucket.lua` by name, so it would have failed at the first request with a missing-resource error. Renamed and filled in before any test ran.
+
+### Step 3: naive limiter, limiter selection and the race measured
+- **`NaiveFixedWindowLimiter`** does `GET` → compare → `INCR` (+ `EXPIRE` on the first hit) as **separate Redis calls**, on purpose. Between one gateway's `GET` and its `INCR`, the other gateways can read the same count and also pass the check. It also has a second, quieter flaw: a crash between `INCR` and `EXPIRE` leaves a counter that never expires. The Lua script has neither problem because it's one atomic call.
+- **`RateLimitService` now chooses the limiter:**
+
+  | Store | Algorithm | Limiter | Key code |
+  |---|---|---|---|
+  | `MEMORY` | any limited one | in-memory bucket | `tb` |
+  | `REDIS` | `NAIVE_FIXED_WINDOW` | naive (race demo) | `nfw` |
+  | `REDIS` | every other limited one | Lua token bucket | `tb` |
+
+  `NONE` always allows. **The key's algorithm code is the code of the limiter that actually runs, not the configured one.** `products` is configured as `SLIDING_WINDOW_COUNTER` but runs the token bucket, so its key ends in `:tb`. When Phase 4's real sliding-window script uses `:swc`, it can never read a leftover token-bucket hash (the WRONGTYPE problem, plan section 4).
+- **Race demo, measured, not assumed:** 3 Redis clients, 60 threads, 1020 attempts, limit 100, real Redis (Testcontainers):
+
+  | Run | Naive allowed | Lua token bucket allowed |
+  |---|---|---|
+  | 1 | 136 (+36) | 100 |
+  | 2 | 118 (+18) | 100 |
+  | 3 | 112 (+12) | 100 |
+  | 4 | 119 (+19) | 100 |
+  | 5 | 124 (+24) | 100 |
+
+  These counts are from one local run; the naive numbers vary by timing. The tests deliberately **don't** assert over-admission, which would be flaky. They assert two guarantees instead:
+  - **The naive limiter never allows fewer than the limit:** a deny means a read of ≥ 100, and the count only grows.
+  - **The Redis counter equals the number allowed exactly:** one `INCR` per allowed request, none per deny.
+
+  Over-admission is logged per run. The end-to-end demo through Nginx is step 8.
+- **Bug hit: requests went to an old gateway.** The first live check showed no Redis keys, and a `200` even with Redis stopped. The new jar had failed with "Port 8090 was already in use": the Phase 2 gateway started earlier for manual testing was still running. Stopped it and re-ran. **Third time this lesson came up** (Jenkins, IntelliJ mock, old gateway): check the port owner before trusting a live result.
+- **Bug hit: the first request after startup got `500` with Redis up.**
+  - **Cause:** Lettuce opens its connection lazily, on the first command. Its connection setup ("Connection initialization timed out after 100 millisecond(s)") runs under the 100 ms command timeout. The first connect through Docker Desktop's port forwarding took longer, so the first user request failed; later requests reused the connection.
+  - **Fix:** `RedisWarmup`, an `ApplicationRunner` that pings Redis at startup (up to 3 tries) when the store is `REDIS`. The connection cost moves off the request path, and the 100 ms request timeout stays. It never fails startup, because the gateway must start even with Redis down (Phase 5).
+  - **Verified:** the same live check now gives request #1 → `200`, 0 errors in the log, and the warm-up logs "Redis connection ready (attempt 1 of 3)".
+- **Behavior with Redis down, for now:** `500` in ~315 ms. It fails fast thanks to the 100 ms timeout, instead of hanging for 60 s. The per-route failure modes and local fallback are Phase 5.
+- **Tests:**
+  - `RateLimitServiceTest` (6, rewritten): which limiter and key code per store and algorithm; NONE; memory store never calls Redis.
+  - `NaiveFixedWindowLimiterTest` (7): sequential limit and retry-after, string counter with window expiry, concurrency guarantees ×5.
+  - `RedisWarmupTest` (3): reachable, unreachable (no failure), memory store skips it.
+  - Full suite: 133 gateway + 12 mock-backend.
