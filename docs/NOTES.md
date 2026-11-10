@@ -94,5 +94,32 @@ Branch: `phase-2/rate-limited-proxy`, cut from `main` after Phase 1 was merged (
 - **Every API response carries `X-Instance-Id`.** It comes from `INSTANCE_ID`, so in Phase 6 you can see which replica served a request and check sticky routing.
 - **Tests:** 7 endpoint tests (cache MISS/HIT, per-client cache, anonymous client, create → 201 and cached, default item, products, login) and 4 chaos tests (rate 1 → 503 while `/chaos` still works, reset, latency, invalid input). Each test uses unique order IDs, and chaos is reset around every test, because the Spring context is shared.
 
+### Step 2: route, API-key and upstream config
+- **`GatewayProperties` is an immutable record tree** bound from `gateway.*`: `RouteConfig`, `ApiKeyConfig`, `UpstreamConfig`, `UpstreamTimeouts`. Collections are copied into unmodifiable ones, so nothing can change the config after startup. Phase 7 replaces whole routes rather than mutating them.
+- **Defaults live on the records:**
+  - `algorithm` defaults to `TOKEN_BUCKET`, `failureMode` to `LOCAL_FALLBACK` (plan section 5.1), and `timeouts` to 500 ms / 2 s.
+  - An omitted `burst` binds as `0` (capacity = limit); a test proves it.
+- **Tier fallback is the route's job:**
+  - `RouteConfig.effectiveTier(clientTier)` returns the client's tier if the route lists it, otherwise `defaultTier`.
+  - `limitFor(tier)` uses that tier. Step 6 also puts the *effective* tier in the rate-limit key, so a premium client on a route without a premium tier shares the free bucket instead of getting a phantom one.
+- **Validation runs at startup and reports every error at once:**
+  - `GatewayConfigValidator` holds the plan section 8 rules as pure static methods, so the Phase 7 admin API can reuse `validateRoute(...)`.
+  - `GatewayConfigCheck` runs them during startup and throws `InvalidGatewayConfigException`, listing each error with its route label.
+  - Rules added beyond plan section 8, each of which would make matching or proxying ambiguous: unique route ids, unique path prefixes, no trailing `/` on a prefix (except `/` itself), upstream URLs must be `http(s)` with a host, and timeouts > 0.
+  - `LimitSpec` already rejects a bad limit while binding, so a `limit: 0` fails startup even before the validator runs.
+- **API keys are never printed in full.** Validation errors mask them (`secr****`).
+- **Demo API keys live in `application.yml`:** `demo-free-key-1` → `user_1`, `demo-free-key-2` → `user_2`, `demo-premium-key-3` → `user_3`. They're fine for a portfolio demo; production keys would come from a secret store or environment variables.
+- **Upstream URL from the environment:** `${MOCK_BACKEND_URL:http://localhost:8081}`. Phase 3 points it at the Docker service names.
+- **Gotcha found while testing: overriding one list element replaces the whole list.**
+  - Running with `--gateway.routes[0].path-prefix=…` did **not** patch route 0. Spring Boot replaced the entire `routes` list from `application.yml` with a new list built only from the overriding source, so routes came out half-empty.
+  - The validator listed every missing field and startup stopped, which is the fail-fast behavior we wanted.
+  - **Lesson for Phase 3:** never override routes with indexed environment variables like `GATEWAY_ROUTES_0_...`. Use single-value placeholders such as `MOCK_BACKEND_URL`, or a whole profile file.
+- **Tests:**
+  - `GatewayPropertiesBindingTest` (4): the real `application.yml` binds as plan section 8 says.
+  - `RouteConfigTest` (3): tier fallback.
+  - `GatewayConfigValidatorTest` (12): one test per rule, plus "all errors reported with labels" and "keys masked".
+  - `GatewayConfigCheckTest` (3): defaults applied; bad config and bad limit stop startup.
+
 ### Known gaps (Phase 2)
 - The mock order cache never evicts entries. That's fine for a mock; it restarts with each container.
+- Demo API keys are in plain text in `application.yml`. That's acceptable for a demo, but not for production.

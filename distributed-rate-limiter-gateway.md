@@ -512,7 +512,7 @@ Each phase has a **Done when** line. Don't move on until it's true.
 
 ### Phase 2: Mock backend, filters and proxy (Days 5-9)
 - [x] Mock backend with all endpoints and the chaos endpoint
-- [ ] Routes and API keys from static config
+- [x] Routes and API keys from static config
 - [ ] Filters in order: correlation ID, route resolution, auth, rate limit (in-memory for now)
 - [ ] Proxy to a single backend with timeouts and header stripping
 - [ ] 429 response with all headers from section 9
