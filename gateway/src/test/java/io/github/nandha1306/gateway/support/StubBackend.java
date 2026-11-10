@@ -1,4 +1,4 @@
-package io.github.nandha1306.gateway.proxy;
+package io.github.nandha1306.gateway.support;
 
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -15,11 +15,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * A real HTTP backend for proxy tests: echoes each request back as JSON, fails on /api/products and is slow on
- * /api/orders/slow.
+ * A real HTTP backend for tests, so no test depends on whatever is running on the developer's machine: echoes each
+ * request back as JSON, fails on /api/products and is slow on /api/orders/slow.
  */
-final class StubBackend {
-    static final long SLOW_RESPONSE_MS = 1_500;
+public final class StubBackend {
+    public static final long SLOW_RESPONSE_MS = 1_500;
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
@@ -34,7 +34,7 @@ final class StubBackend {
     /**
      * Starts the stub on a free local port.
      */
-    static StubBackend start() {
+    public static StubBackend start() {
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             ExecutorService executor = Executors.newCachedThreadPool();
@@ -52,21 +52,21 @@ final class StubBackend {
     /**
      * Returns the base URL to configure as the upstream.
      */
-    String baseUrl() {
+    public String baseUrl() {
         return "http://" + authority();
     }
 
     /**
      * Returns the host and port the gateway should report in X-Served-By.
      */
-    String authority() {
+    public String authority() {
         return "127.0.0.1:" + server.getAddress().getPort();
     }
 
     /**
      * Stops the stub and its threads.
      */
-    void stop() {
+    public void stop() {
         server.stop(0);
         executor.shutdownNow();
     }

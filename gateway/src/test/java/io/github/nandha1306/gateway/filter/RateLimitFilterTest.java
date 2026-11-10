@@ -9,27 +9,44 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import io.github.nandha1306.gateway.support.StubBackend;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 /**
  * Tests rate limiting and the 429 response contract, using test routes that refill one token per hour so no
  * tokens come back during a test. Each test uses its own client, because buckets live as long as the context.
+ * Allowed requests are proxied to a stub backend, so they get a deterministic 200.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("ratelimit-test")
 class RateLimitFilterTest {
+    private static final int OK = 200;
     private static final int TOO_MANY_REQUESTS = 429;
+    private static final StubBackend BACKEND = StubBackend.start();
 
     @Autowired
     private MockMvc mvc;
+
+    @DynamicPropertySource
+    static void pointUpstreamAtStub(DynamicPropertyRegistry registry) {
+        registry.add("gateway.upstreams.mock.urls[0]", BACKEND::baseUrl);
+    }
+
+    @AfterAll
+    static void stopStub() {
+        BACKEND.stop();
+    }
 
     /**
      * Verifies that an allowed request carries the bucket capacity and the tokens left.
@@ -38,7 +55,7 @@ class RateLimitFilterTest {
     void allowedRequestCarriesRateLimitHeaders() throws Exception {
         MvcResult result = callLimited("rl-free-a");
 
-        assertThat(result.getResponse().getStatus()).isNotEqualTo(TOO_MANY_REQUESTS);
+        assertThat(result.getResponse().getStatus()).isEqualTo(OK);
         assertThat(result.getResponse().getHeader(GatewayHeaders.RATE_LIMIT_LIMIT)).isEqualTo("3");
         assertThat(result.getResponse().getHeader(GatewayHeaders.RATE_LIMIT_REMAINING)).isEqualTo("2");
         assertThat(result.getResponse().getHeader(HttpHeaders.RETRY_AFTER)).isNull();
@@ -73,7 +90,7 @@ class RateLimitFilterTest {
     void premiumTierGetsLargerBurst() throws Exception {
         for (int i = 0; i < 6; i++) {
             MvcResult allowed = callLimited("rl-premium");
-            assertThat(allowed.getResponse().getStatus()).isNotEqualTo(TOO_MANY_REQUESTS);
+            assertThat(allowed.getResponse().getStatus()).isEqualTo(OK);
             assertThat(allowed.getResponse().getHeader(GatewayHeaders.RATE_LIMIT_LIMIT)).isEqualTo("6");
         }
 
@@ -98,7 +115,7 @@ class RateLimitFilterTest {
         }
         assertThat(callLimited("rl-free-c").getResponse().getStatus()).isEqualTo(TOO_MANY_REQUESTS);
 
-        assertThat(callLimited("rl-free-d").getResponse().getStatus()).isNotEqualTo(TOO_MANY_REQUESTS);
+        assertThat(callLimited("rl-free-d").getResponse().getStatus()).isEqualTo(OK);
     }
 
     /**
@@ -106,11 +123,11 @@ class RateLimitFilterTest {
      */
     @Test
     void publicRouteLimitsPerIp() throws Exception {
-        assertThat(callPublic("198.51.100.1").getResponse().getStatus()).isNotEqualTo(TOO_MANY_REQUESTS);
-        assertThat(callPublic("198.51.100.1").getResponse().getStatus()).isNotEqualTo(TOO_MANY_REQUESTS);
+        assertThat(callPublic("198.51.100.1").getResponse().getStatus()).isEqualTo(OK);
+        assertThat(callPublic("198.51.100.1").getResponse().getStatus()).isEqualTo(OK);
         assertThat(callPublic("198.51.100.1").getResponse().getStatus()).isEqualTo(TOO_MANY_REQUESTS);
 
-        assertThat(callPublic("198.51.100.2").getResponse().getStatus()).isNotEqualTo(TOO_MANY_REQUESTS);
+        assertThat(callPublic("198.51.100.2").getResponse().getStatus()).isEqualTo(OK);
     }
 
     /**
@@ -120,7 +137,7 @@ class RateLimitFilterTest {
     void noneAlgorithmIsNeverLimited() throws Exception {
         for (int i = 0; i < 5; i++) {
             MvcResult result = mvc.perform(get("/api/open").header(GatewayHeaders.API_KEY, "rl-free-e")).andReturn();
-            assertThat(result.getResponse().getStatus()).isNotEqualTo(TOO_MANY_REQUESTS);
+            assertThat(result.getResponse().getStatus()).isEqualTo(OK);
             assertThat(result.getResponse().getHeader(GatewayHeaders.RATE_LIMIT_LIMIT)).isNull();
         }
     }

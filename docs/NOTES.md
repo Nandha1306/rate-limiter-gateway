@@ -187,6 +187,12 @@ Branch: `phase-2/rate-limited-proxy`, cut from `main` after Phase 1 was merged (
   - **Cause:** IntelliJ was already running `MockBackendApplication` on 8081, so the copy started from the terminal failed with "Port 8081 was already in use", and the gateway talked to the IntelliJ one.
   - **Lesson:** check port owners (`Get-NetTCPConnection -LocalPort 8081`) before trusting an end-to-end result. The same lesson as the Jenkins issue in Phase 0.
 
+- **Bug hit: CI failed but local runs passed.** `RateLimitFilterTest.allowedRequestCarriesRateLimitHeaders` failed on GitHub Actions with `expected: null but was: "5"` for `Retry-After`.
+  - **Cause:** since step 7, an *allowed* request goes on to the proxy, which called the real upstream from `application.yml` (`localhost:8081`). Locally the IntelliJ mock backend was running there, so the test got a `200`. On CI nothing listens there, so the proxy answered `503 no_healthy_backend` with `Retry-After: 5`, which the test mistook for rate-limiter output. The local green runs were green for the wrong reason.
+  - **Reproduced locally** by pointing the upstream at a dead port: `-Dgateway.upstreams.mock.urls[0]=http://127.0.0.1:1`.
+  - **Fix:** moved `StubBackend` to a shared `support` test package. `RateLimitFilterTest` now points its upstream at the stub via `@DynamicPropertySource`, and allowed requests assert exactly `200` instead of "not 429". The other filter tests only check request attributes, so they pass with or without a backend. Verified by running the whole suite with the dead-port override.
+  - **Lesson:** a test must not depend on what happens to be running on the developer's machine. Run the suite once with dependencies unreachable (as on CI) before pushing.
+
 ### Phase 2 "Done when": verified
 Mock backend on :8081, gateway on :8090:
 - `demo-free-key-1` on `/api/orders/1`: requests 1–10 → `200` with the order from the backend, `X-RateLimit-Remaining` 9→0, `X-Served-By: localhost:8081`, `X-Cache`, `X-Instance-Id`. Request 11 → **`429`, `Retry-After: 1`**.
