@@ -308,3 +308,29 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
   - `NaiveFixedWindowLimiterTest` (7): sequential limit and retry-after, string counter with window expiry, concurrency guarantees ×5.
   - `RedisWarmupTest` (3): reachable, unreachable (no failure), memory store skips it.
   - Full suite: 133 gateway + 12 mock-backend.
+
+### Step 4: demo routes and multi-instance settings
+- **Accuracy demo routes** `demo-naive` (`/api/demo/naive`, `NAIVE_FIXED_WINDOW`) and `demo-lua` (`/api/demo/lua`, `TOKEN_BUCKET`):
+  - **Identical limit:** free tier 100 per **hour**, burst 0, so capacity = 100.
+  - **Exactly 100 is the right answer for the Lua route:** the refill is 100/3600 ≈ 0.028 tokens/s, so a test lasting seconds gains well under one token, and the bound "burst + rate × elapsed" is 100.
+  - **Re-runs:** the buckets last an hour, so a re-run within the hour must clear `rl:{demo-*` keys first (automated in step 8).
+- **Mock backend `GET /api/demo/**`** returns `{"ok":true,"instanceId":...}`. It's cheap and always 200, so the accuracy test measures only the gateway's limiting, never backend latency or errors.
+- **`MOCK_BACKEND_URLS` replaces `MOCK_BACKEND_URL`.** It's one comma-separated value (`gateway.upstreams.mock.urls: ${MOCK_BACKEND_URLS:...}`) that Spring binds to a `List<URI>`, trimming spaces around commas.
+  - This avoids indexed environment variables, which would replace whole lists (the Phase 2 lesson).
+  - Each gateway in Compose will list a different backend first, because the proxy still uses only the first URL until Phase 6.
+  - Tests that set `urls[0]` through `@DynamicPropertySource` still work, because an indexed property in a higher-priority source wins.
+- **`X-Gateway-Id`** comes from `INSTANCE_ID` (`gateway.instance.id`, default `gateway-local`):
+  - Set by `GatewayIdFilter`, which runs first, so even 401/404/429 responses carry it.
+  - It's on the proxy's "set by gateway" list, so a backend can't overwrite it. The stub backend now sends a fake `X-Gateway-Id`, and the test checks the client still sees the gateway's value.
+  - It's what will prove Nginx spreads requests across all three gateways.
+- **Live check** (real `INSTANCE_ID`, `MOCK_BACKEND_URLS` with two URLs and a space, Redis in a container):
+  - The response carried `X-Gateway-Id: gw-1`, `X-RateLimit-Limit: 100` and `X-Served-By: localhost:8081` (the first URL).
+  - 104 sequential calls → **100 × 200 then 4 × 429 on both demo routes**; the Lua key is a hash and the naive counter read exactly 100.
+  - **This is expected:** the naive race needs requests running concurrently through several gateways, which a sequential single-gateway run can't produce. Step 8 measures that through Nginx.
+- **Tests:**
+  - `GatewayPropertiesBindingTest` (+1): the demo routes bind with the same limit.
+  - `UpstreamUrlsBindingTest` (2): a comma list, with spaces, binds in order; a single URL still works.
+  - `GatewayIdFilterTest` (1): header present on 200, 404 and 401.
+  - `ProxyIntegrationTest`: a backend can't overwrite `X-Gateway-Id`.
+  - `ApiEndpointsTest` (+1): `/api/demo/**`.
+  - Full suite: 137 gateway + 13 mock-backend.
