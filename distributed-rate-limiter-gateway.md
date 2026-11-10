@@ -511,12 +511,12 @@ Each phase has a **Done when** line. Don't move on until it's true.
 - **Done when:** the concurrency test passes reliably 20 runs in a row. ✅ (`@RepeatedTest(20)`, all green)
 
 ### Phase 2: Mock backend, filters and proxy (Days 5-9)
-- [ ] Mock backend with all endpoints and the chaos endpoint
-- [ ] Routes and API keys from static config
-- [ ] Filters in order: correlation ID, route resolution, auth, rate limit (in-memory for now)
-- [ ] Proxy to a single backend with timeouts and header stripping
-- [ ] 429 response with all headers from section 9
-- **Done when:** curl shows 200s, then 429s with a correct Retry-After.
+- [x] Mock backend with all endpoints and the chaos endpoint
+- [x] Routes and API keys from static config
+- [x] Filters in order: correlation ID, route resolution, auth, rate limit (in-memory for now)
+- [x] Proxy to a single backend with timeouts and header stripping
+- [x] 429 response with all headers from section 9
+- **Done when:** curl shows 200s, then 429s with a correct Retry-After. ✅ (verified end to end; see docs/NOTES.md)
 
 ### Phase 3: Redis + multiple instances (Days 10-15), MVP
 - [ ] Redis client with the 100 ms timeout
