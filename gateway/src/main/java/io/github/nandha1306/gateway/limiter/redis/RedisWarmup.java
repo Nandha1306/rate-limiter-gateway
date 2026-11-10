@@ -2,6 +2,7 @@ package io.github.nandha1306.gateway.limiter.redis;
 
 import io.github.nandha1306.gateway.config.LimiterProperties;
 import io.github.nandha1306.gateway.limiter.LimiterStore;
+import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -17,7 +18,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class RedisWarmup implements ApplicationRunner {
-    static final int ATTEMPTS = 3;
+    static final int ATTEMPTS = 10;
+    static final Duration PAUSE_BETWEEN_ATTEMPTS = Duration.ofMillis(250);
 
     private static final Logger log = LoggerFactory.getLogger(RedisWarmup.class);
 
@@ -41,7 +43,7 @@ public class RedisWarmup implements ApplicationRunner {
     }
 
     /**
-     * Pings Redis up to {@value #ATTEMPTS} times and returns whether it answered.
+     * Pings Redis up to {@value #ATTEMPTS} times, pausing between attempts, and returns whether it answered.
      */
     boolean warmUp() {
         RuntimeException lastFailure = null;
@@ -52,9 +54,23 @@ public class RedisWarmup implements ApplicationRunner {
                 return true;
             } catch (RuntimeException e) {
                 lastFailure = e;
+                log.info("Redis warm-up attempt {} of {} failed: {}", attempt, ATTEMPTS, e.getMessage());
+                if (attempt < ATTEMPTS && !pause()) {
+                    break;
+                }
             }
         }
         log.warn("Redis not reachable at startup after {} attempts: {}", ATTEMPTS, lastFailure.getMessage());
         return false;
+    }
+
+    private static boolean pause() {
+        try {
+            Thread.sleep(PAUSE_BETWEEN_ATTEMPTS);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 }

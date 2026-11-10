@@ -1,0 +1,102 @@
+name: rate-limiter-gateway
+
+x-healthcheck-timing: &healthcheck-timing
+  interval: 5s
+  timeout: 3s
+  retries: 20
+  start_period: 30s
+
+x-backend: &backend
+  build: ./mock-backend
+  image: rlg-mock-backend:dev
+  restart: unless-stopped
+  mem_limit: 384m
+  healthcheck:
+    <<: *healthcheck-timing
+    test: ["CMD", "curl", "-fs", "http://localhost:8081/actuator/health"]
+
+x-gateway: &gateway
+  build: ./gateway
+  image: rlg-gateway:dev
+  restart: unless-stopped
+  mem_limit: 512m
+  depends_on:
+    redis:
+      condition: service_healthy
+  healthcheck:
+    <<: *healthcheck-timing
+    test: ["CMD", "curl", "-fs", "http://localhost:8080/actuator/health"]
+
+x-gateway-env: &gateway-env
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  LIMITER_STORE: REDIS
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  backend-1:
+    <<: *backend
+    environment:
+      INSTANCE_ID: backend-1
+    ports:
+      - "8081:8081"
+
+  backend-2:
+    <<: *backend
+    environment:
+      INSTANCE_ID: backend-2
+    ports:
+      - "8082:8081"
+
+  backend-3:
+    <<: *backend
+    environment:
+      INSTANCE_ID: backend-3
+    ports:
+      - "8083:8081"
+
+  gateway1:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      INSTANCE_ID: gw-1
+      MOCK_BACKEND_URLS: http://backend-1:8081,http://backend-2:8081,http://backend-3:8081
+
+  gateway2:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      INSTANCE_ID: gw-2
+      MOCK_BACKEND_URLS: http://backend-2:8081,http://backend-3:8081,http://backend-1:8081
+
+  gateway3:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      INSTANCE_ID: gw-3
+      MOCK_BACKEND_URLS: http://backend-3:8081,http://backend-1:8081,http://backend-2:8081
+
+  nginx:
+    image: nginx:alpine
+    command: ["nginx", "-g", "daemon off;", "-c", "/conf/nginx.conf"]
+    restart: unless-stopped
+    volumes:
+      - ./nginx:/conf:ro
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+    depends_on:
+      gateway1:
+        condition: service_healthy
+      gateway2:
+        condition: service_healthy
+      gateway3:
+        condition: service_healthy

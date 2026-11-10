@@ -371,3 +371,27 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
   - **Fix:** `worker_processes 1`, which is plenty at this scale. Re-test: 9 calls rotated gw-1 → gw-2 → gw-3 three times.
   - **Lesson:** per-worker state makes "round robin" uneven at low volume. At high volume it evens out, as the 34/36/30 split showed.
 - **Sandbox note:** a command containing `/etc/nginx/nginx.conf` was blocked as a sensitive path, so the checks mount the folder at `/conf` and start Nginx with `-c /conf/nginx.conf`. Compose (step 7) will do the same.
+
+### Step 7: Docker Compose
+- **`docker-compose.yml`:** Redis, `backend-1/2/3`, `gateway1/2/3` and Nginx, one `docker compose up`. YAML anchors (`x-backend`, `x-gateway`, `x-gateway-env`, `x-healthcheck-timing`) keep the three copies of each service identical apart from their IDs.
+  - **Redis:** persistence off (`--save ""`, no AOF), so it holds limits only. Healthcheck: `redis-cli ping`.
+  - **Gateways:**
+    - `depends_on: redis: condition: service_healthy`. Plain `depends_on` would only wait for the container to *start*, not for Redis to answer (plan section 13).
+    - **No published ports**, so the only way in is Nginx, which keeps `X-Real-IP` trustworthy.
+    - `MOCK_BACKEND_URLS` lists a different backend first per gateway (gw-1 → backend-1, …).
+    - `mem_limit: 512m`, so the 75% heap cap applies.
+  - **Backends:** published on 8081–8083, only so the chaos endpoint can be called.
+  - **Health checks:** gateways and backends run `curl /actuator/health` (curl ships in the image). Nginx waits for all three gateways to be **healthy**, so `docker compose up --wait` returns only when the stack can serve.
+  - **Nginx:** published on `${NGINX_PORT:-8080}` (8088 on this machine, because of Jenkins), with `./nginx` mounted at `/conf` and started with `-c /conf/nginx.conf`.
+- **Verified:** `NGINX_PORT=8088 docker compose up -d --build --wait` → everything healthy in 68 s.
+  - Requests rotate gw-1 → gw-2 → gw-3, and each gateway used its own first backend (`X-Served-By: backend-N:8081`).
+  - 104 sequential calls to `/api/demo/lua` → **exactly 100 allowed** (gw-1 = 34, gw-2 = 33, gw-3 = 33).
+  - Gateways have no host port; `/actuator` → 404 through Nginx; backend chaos endpoint reachable on 8081.
+  - 0 errors in all logs. `docker compose down` → 0 containers and 0 networks left.
+- **Bug hit: the Redis warm-up had no margin left.**
+  - **Symptom:** in Compose, gateway1 only connected on **attempt 3 of 3**.
+  - **Cause:** six JVMs start at once and compete for CPU (each gateway took ~32–36 s to start). A cold JVM's first Lettuce connection then takes longer than the 100 ms timeout ("Unable to connect to Redis"). One more failed attempt and the first user request would have hit the step 3 `500` again.
+  - **Fix:** 10 attempts with 250 ms between them (at most a few seconds on a ~35 s startup), and each failed attempt is now logged.
+  - **Re-test:** connected on attempts 2, 3 and 2 of 10, and the first request after a restart → `200`.
+  - **Lesson:** a retry count that barely works on a quiet dev machine has no margin once real startup contention appears.
+- **Mistake to avoid:** `redis-cli --latency-history` runs until stopped. Running it through a script hung the command until the task was killed.

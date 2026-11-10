@@ -2,7 +2,7 @@
 
 A rate-limiting API gateway that enforces per-client, per-route limits that stay **correct across multiple gateway instances**. It uses atomic Redis Lua scripts, per-route failure modes for Redis outages, per-backend circuit breakers, and consistent hashing for cache affinity.
 
-> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). The gateway now rate-limits through Redis: the Lua token bucket allowed exactly 100 of 1020 concurrent requests from 3 clients, while the naive limiter allowed 112–136. Demo routes, Docker images and the Nginx load balancer done (verified in front of 3 gateways: exactly 100 of 104 requests allowed across all of them); next: Docker Compose. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
+> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). The gateway now rate-limits through Redis: the Lua token bucket allowed exactly 100 of 1020 concurrent requests from 3 clients, while the naive limiter allowed 112–136. The full stack runs with one `docker compose up` (Redis, 3 gateways, 3 backends, Nginx), and the limit holds across all three gateways. Next: the concurrent accuracy test, naive vs Lua through Nginx. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
 
 ## Built so far
 
@@ -41,6 +41,29 @@ curl localhost:8080/actuator/health                # {"status":"UP"}
 On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 
 **Port 8080 already taken (e.g. by Jenkins)?** Create the gitignored `gateway/src/main/resources/application-local.yml` with `server.port: 8090`. The gateway imports it automatically when it exists, so the IDE run button, Maven and `java -jar` all pick it up. For a one-off run you can also pass `--server.port=8090`.
+
+## Quick start (Docker Compose)
+
+Requires Docker. One command starts Redis, three gateways, three mock backends and Nginx, and waits until all are healthy:
+
+```bash
+docker compose up -d --build --wait            # Nginx on :8080
+NGINX_PORT=8088 docker compose up -d --build --wait   # if 8080 is taken (PowerShell: $env:NGINX_PORT="8088"; docker compose up -d --build --wait)
+```
+
+```bash
+curl -i -H "X-API-Key: demo-free-key-1" localhost:8080/api/orders/1   # X-Gateway-Id rotates gw-1, gw-2, gw-3
+curl -i -H "X-API-Key: demo-free-key-1" localhost:8080/api/demo/lua   # shared limit: 100 per hour across all gateways
+curl -X POST localhost:8081/chaos -H "Content-Type: application/json" -d '{"failureRate":1.0}'   # break backend-1
+docker compose down                                                   # stop and remove everything
+```
+
+| Service | Host port | Notes |
+|---|---|---|
+| `nginx` | `${NGINX_PORT:-8080}` | The only way into the gateways; sets `X-Real-IP`; hides `/actuator` |
+| `gateway1/2/3` | none | Wait for Redis to be healthy; each lists a different backend first |
+| `backend-1/2/3` | 8081, 8082, 8083 | Published only for the chaos endpoint |
+| `redis` | none | Shared rate-limit state; persistence off |
 
 ## Docker images
 
