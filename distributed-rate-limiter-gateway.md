@@ -511,7 +511,7 @@ Each phase has a **Done when** line. Don't move on until it's true.
 - **Done when:** the concurrency test passes reliably 20 runs in a row. ✅ (`@RepeatedTest(20)`, all green)
 
 ### Phase 2: Mock backend, filters and proxy (Days 5-9)
-- [ ] Mock backend with all endpoints and the chaos endpoint
+- [x] Mock backend with all endpoints and the chaos endpoint
 - [ ] Routes and API keys from static config
 - [ ] Filters in order: correlation ID, route resolution, auth, rate limit (in-memory for now)
 - [ ] Proxy to a single backend with timeouts and header stripping

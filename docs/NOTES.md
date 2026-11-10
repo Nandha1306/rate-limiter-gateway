@@ -69,3 +69,30 @@ Interview prep log. Add an entry whenever something breaks or a choice is made.
   - Merged `origin/main` into the branch.
   - Used a merge, not a rebase, because the branch was already pushed; a rebase would need a force push.
 - **Lesson:** `git switch main && git pull` before cutting a new branch.
+
+## Phase 2: mock backend, filters and proxy
+
+Branch: `phase-2/rate-limited-proxy`, cut from `main` after Phase 1 was merged (PR #3).
+
+### Decisions (agreed before coding)
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | **Header names:** `X-API-Key`, `X-Correlation-Id`, `X-Client-Id`, `X-Served-By`, `X-Real-IP`, `X-Instance-Id`, `X-Cache` | The plan describes these headers but doesn't name them; fixing the names once keeps the gateway, the mock backend and the tests consistent |
+| 2 | **Every route uses the in-memory token bucket** until Phase 4; `NONE` always allows | Only the token bucket exists so far. The route's `algorithm` field is parsed now so config doesn't change later |
+| 3 | **`X-RateLimit-Limit` reports the bucket capacity** | `X-RateLimit-Remaining` counts tokens, so reporting capacity keeps `Remaining ≤ Limit`. Reporting the per-window limit would give odd pairs like "Limit 60, Remaining 9" |
+| 4 | **`RestClient` on the JDK `HttpClient`:** HTTP/1.1, connect 500 ms, read 2 s | Blocking client that suits virtual threads; forcing HTTP/1.1 avoids upgrade attempts (plan section 6) |
+| 5 | **Route config is validated at startup** (plan section 8 rules) | Fail fast on a typo instead of at the first request. Phase 7's admin API reuses the same validator |
+| 6 | **Bodies are buffered, not streamed** | Simple and enough for small JSON payloads. Logged as a known gap |
+| 7 | **Proxy tests use the JDK `HttpServer` as a fake backend** | Needs a real socket to test timeouts and refused connections; avoids adding WireMock |
+
+### Step 1: mock backend
+- **Chaos is a `HandlerInterceptor` on `/api/**` and `/auth/**`,** not code in each controller. Every mock endpoint gets the same latency and failure behavior, and `/chaos` itself can never be broken by chaos, so you can always turn it off.
+- **`ChaosSettings` is an immutable record in an `AtomicReference`.** A request reads one snapshot, so latency and failure decisions come from the same settings even if someone changes them mid-request. The record validates itself (`failureRate` 0–1, `latencyMs` 0–60000); bad input gets a 400 and leaves the current settings unchanged.
+- **The order cache key is a `(clientId, orderId)` record,** not the string `clientId + ":" + orderId`. With strings, client `a:b` + order `c` would collide with client `a` + order `b:c`.
+- **The cache miss sleeps outside the map,** then uses `putIfAbsent`. Sleeping inside `computeIfAbsent` would hold the map's internal lock for 20 ms and block other keys. Two concurrent misses on the same key can both report MISS, which is acceptable for a mock.
+- **Every API response carries `X-Instance-Id`.** It comes from `INSTANCE_ID`, so in Phase 6 you can see which replica served a request and check sticky routing.
+- **Tests:** 7 endpoint tests (cache MISS/HIT, per-client cache, anonymous client, create → 201 and cached, default item, products, login) and 4 chaos tests (rate 1 → 503 while `/chaos` still works, reset, latency, invalid input). Each test uses unique order IDs, and chaos is reset around every test, because the Spring context is shared.
+
+### Known gaps (Phase 2)
+- The mock order cache never evicts entries. That's fine for a mock; it restarts with each container.
