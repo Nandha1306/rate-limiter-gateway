@@ -2,7 +2,7 @@
 
 A rate-limiting API gateway that enforces per-client, per-route limits that stay **correct across multiple gateway instances**. It uses atomic Redis Lua scripts, per-route failure modes for Redis outages, per-backend circuit breakers, and consistent hashing for cache affinity.
 
-> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). Redis client added; next: the token bucket Lua script. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
+> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). Redis client and the Lua token bucket done (3 clients on one Redis are allowed exactly the capacity); next: the naive limiter for the race demo, and wiring the limiters in. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
 
 ## Built so far
 

@@ -520,11 +520,11 @@ Each phase has a **Done when** line. Don't move on until it's true.
 
 ### Phase 3: Redis + multiple instances (Days 10-15), MVP
 - [x] Redis client with the 100 ms timeout
-- [ ] Token bucket Lua script using Redis time; key format with hash tags
+- [x] Token bucket Lua script using Redis time; key format with hash tags
 - [ ] Naive limiter for the race demo
 - [ ] Minimal Docker Compose: Redis, 3 gateways, Nginx, 3 backends
 - [ ] Accuracy test through Nginx: naive over-admits, Lua doesn't. Screenshot both
-- [ ] Integration test with Testcontainers: three separate Redis clients in one JVM against one Redis. Total allowed equals capacity
+- [x] Integration test with Testcontainers: three separate Redis clients in one JVM against one Redis. Total allowed equals capacity
 - **Done when:** `docker compose up` works and the accuracy test proves global limits. **Put the project on your resume now.**
 
 ### Phase 4: More algorithms (Days 16-19)

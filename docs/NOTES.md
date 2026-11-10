@@ -256,3 +256,17 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
   - `RedisClientSettingsTest` (3): timeouts, tests use `MEMORY`, health `UP` without Redis.
   - `LimiterPropertiesTest` (3): default `REDIS`, switch to `MEMORY`, unknown value fails startup.
   - The full suite (112) passes with no Redis running.
+
+### Step 2: token bucket in Lua
+- **`resources/lua/token_bucket.lua`** does the whole read → refill → take → save in **one atomic Redis call**, so no other gateway can interleave between the check and the update (plan section 4):
+  - **Time comes from `redis.call('TIME')`, never from the gateway,** so three gateways with drifting clocks still agree on how much has refilled.
+  - **State is a hash `{tokens, ts}`.** A missing bucket starts full. Refill happens only when time has moved forward, and `tokens` is capped at capacity on *every* call. This closes the Phase 1 gap where the cap was skipped when no time had passed.
+  - **Expiry is 2 × the full-refill time,** so idle buckets clean themselves up.
+  - **Overflow guards:** with a near-zero refill rate (`windowSeconds = Long.MAX_VALUE`), `capacity / rate` is astronomically large. The expiry is capped at 30 days and retry-after at 2⁵³−1 ms, the largest integer a double holds exactly.
+  - **Returns `{allowed, floor(tokens), retryAfterMs}`,** rounded in the script, because Redis truncates Lua numbers to integers on return.
+- **`RedisTokenBucketLimiter`** implements the same `RateLimiter` interface as the Phase 1 bucket (Strategy pattern). It loads the script once; Spring runs it with `EVALSHA` and falls back to `EVAL` if Redis doesn't have it cached. It's a bean, but `RateLimitService` only starts using it in step 3.
+- **Tests:** `RedisTokenBucketLimiterTest`, against a real `redis:7-alpine` in Testcontainers.
+  - Allow/deny/remaining/retry-after; refill over real time; stored as a hash with the right expiry; separate keys; the near-zero-rate caps.
+  - **Three separate Redis clients (standing in for 3 gateways), 60 threads, 1020 attempts on one key, capacity 100 → exactly 100 allowed**, 5 runs out of 5. The refill is 1 token per hour, so the plan section 15 bound (burst + rate × elapsed) is exactly 100 for a test lasting seconds.
+  - `@Testcontainers(disabledWithoutDocker = true)`: skipped when Docker is off, and confirmed **not** skipped here (10 run, 0 skipped).
+- **Bug hit: script file named `token_bucker.lua` and empty.** The Java side loads `lua/token_bucket.lua` by name, so it would have failed at the first request with a missing-resource error. Renamed and filled in before any test ran.
