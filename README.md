@@ -2,7 +2,7 @@
 
 A rate-limiting API gateway that enforces per-client, per-route limits that stay **correct across multiple gateway instances**. It uses atomic Redis Lua scripts, per-route failure modes for Redis outages, per-backend circuit breakers, and consistent hashing for cache affinity.
 
-> **Status: Phase 2 in progress.** Mock backend and gateway route/API-key config done; next: the filter chain and proxy. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
+> **Status: Phase 2 in progress.** Mock backend, gateway config and the correlation ID filter done; next: route resolution, auth, rate limiting and the proxy. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
 
 ## Built so far
 
@@ -12,6 +12,7 @@ A rate-limiting API gateway that enforces per-client, per-route limits that stay
 | 1 | Thread-safe in-memory token bucket (`InMemoryTokenBucket`): per-key buckets, per-bucket lock, monotonic injectable clock, retry-after | `InMemoryTokenBucketTest`: refill, burst, retry-after, per-key isolation, and 100 threads allowed exactly 100 (repeated 20×) |
 | 2 (in progress) | Mock backend: per-client order cache, products, login, and a chaos endpoint for failures and latency | `ApiEndpointsTest`, `ChaosTest` |
 | 2 (in progress) | Gateway config: routes, tiers, demo API keys and upstreams from `application.yml`, validated at startup (the gateway refuses to start on bad config) | `GatewayPropertiesBindingTest`, `GatewayConfigValidatorTest`, `GatewayConfigCheckTest`, `RouteConfigTest` |
+| 2 (in progress) | Correlation ID on every request: reuses a safe `X-Correlation-Id` or generates one, returns it, and tags log lines with it | `CorrelationIdFilterTest`, `CorrelationIdFilterIntegrationTest` |
 
 **Stack:** Java 21, Spring Boot 3.5 (MVC + virtual threads), Redis 7 + Lua, Resilience4j, Micrometer, Prometheus, Grafana, Nginx, Docker Compose, k6, Testcontainers
 
@@ -58,6 +59,8 @@ Until Phase 4, every route is enforced with the in-memory token bucket; the conf
 | `demo-premium-key-3` | `user_3` | premium |
 
 **Backend URL:** set `MOCK_BACKEND_URL` (default `http://localhost:8081`).
+
+**Correlation ID:** every response carries `X-Correlation-Id`. Send your own (1–64 characters of letters, digits, `-`, `_`) to trace a request across logs; anything else is replaced with a generated UUID.
 
 Don't override routes with indexed environment variables or flags such as `--gateway.routes[0]...`; that replaces the whole route list.
 
