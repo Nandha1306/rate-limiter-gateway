@@ -334,3 +334,22 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
   - `ProxyIntegrationTest`: a backend can't overwrite `X-Gateway-Id`.
   - `ApiEndpointsTest` (+1): `/api/demo/**`.
   - Full suite: 137 gateway + 13 mock-backend.
+
+### Step 5: Dockerfiles
+- **One multi-stage `Dockerfile` per module, built from the module folder alone.** This is why the modules don't inherit from the root POM (Phase 0 decision).
+  - **Build stage:** `maven:3.9-eclipse-temurin-21`. `pom.xml` is copied and `mvn dependency:go-offline` runs **before** `src/` is copied, so dependencies sit in their own cached layer and only change when the POM does.
+  - **Run stage:** `eclipse-temurin:21-jre`, which has no Maven and no JDK, just the jar.
+  - **`-DskipTests` in the image build:** tests already run in CI, and Testcontainers can't start Docker from inside a Docker build.
+- **Non-root:** a system user `app` (uid 999) runs the jar, so a compromise of the app isn't root in the container.
+- **Memory:** `JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"`. The heap is sized from the *container's* limit, not the host's. On OOM the JVM exits so Docker can restart it, rather than running on in a broken state.
+- **`.dockerignore` excludes `target/`, IDE files and `**/application-local.*`.** This closes the Phase 0 follow-up: without it, the local port-8090 override would be baked into the image.
+- **Verified by running the images** (Redis, backend and gateway containers on one Docker network):
+  1. `Tomcat started on port 8080` even though `application-local.yml` exists on disk, so the override was **not** baked in.
+  2. Both images run as `uid=999(app)`.
+  3. With `-m 512m`, the JVM's max heap is ~371 MB, i.e. 75% of what the JVM sees as available.
+  4. The request through the gateway container → `200`, served by `rlg5-backend:8081` (`x-instance-id: backend-1`), `X-Gateway-Id: gw-1`, bucket key in the Redis container, Redis warm-up ready on attempt 1, 0 errors.
+- **First build** took ~6 min (gateway) and ~2 min (mock-backend), mostly downloading base images and dependencies. Images are ~520 MB / ~500 MB.
+- **CI:** a new `docker-images` job builds both images and fails if either runs as root, so a broken Dockerfile shows up on the next push, not at `docker compose up`.
+- **Possible later improvements (not needed for the MVP):**
+  - **Smaller images:** a distroless or Alpine JRE, or a `jlink`-trimmed runtime.
+  - **Faster rebuilds:** Spring Boot's layered jar (`-Djarmode=tools extract --layers`), so a code change only rebuilds the small application layer.
