@@ -513,9 +513,9 @@ Each phase has a **Done when** line. Don't move on until it's true.
 ### Phase 2: Mock backend, filters and proxy (Days 5-9)
 - [x] Mock backend with all endpoints and the chaos endpoint
 - [x] Routes and API keys from static config
-- [ ] Filters in order: correlation ID, route resolution, auth, rate limit (in-memory for now)
+- [x] Filters in order: correlation ID, route resolution, auth, rate limit (in-memory for now)
 - [ ] Proxy to a single backend with timeouts and header stripping
-- [ ] 429 response with all headers from section 9
+- [x] 429 response with all headers from section 9
 - **Done when:** curl shows 200s, then 429s with a correct Retry-After.
 
 ### Phase 3: Redis + multiple instances (Days 10-15), MVP

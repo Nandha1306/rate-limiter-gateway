@@ -148,6 +148,25 @@ Branch: `phase-2/rate-limited-proxy`, cut from `main` after Phase 1 was merged (
 - **The client's tier is stored as given.** The rate limiter maps it to the route's effective tier (step 6), because one key can hit several routes with different tier lists.
 - **Tests:** `ApiKeyRegistryTest` (2), `ClientIpResolverTest` (3) and `AuthFilterTest` (7: no key, unknown or blank key, free and premium keys, public route by socket IP and by `X-Real-IP`, key ignored on a public route, unrouted requests skip auth, MDC cleared).
 
+### Step 6: rate limiting and the 429 contract
+- **Split of responsibilities:**
+  - **`RateLimitFilter`** decides *what* to limit: route, effective tier (`route.effectiveTier`), client and `LimitSpec`.
+  - **`RateLimitService`** decides *how*: which limiter and which key. The `limiter` package knows nothing about routes or HTTP, so Phase 3/4 can swap in Redis limiters without touching the filter.
+- **Keys follow plan section 4:** `rl:{routeId:tier:clientId}:tb`. Each route, tier and client combination gets its own bucket. The *effective* tier is used, so a premium client on a route without a premium tier shares the free-tier bucket instead of getting a separate one.
+- **Every algorithm except `NONE` is enforced with the token bucket for now** (decision 2). Unbuilt algorithms are still limited, never left open. `NONE` skips limiting and sends no rate-limit headers.
+- **Response contract (plan section 9):**
+  - **Allowed:** `X-RateLimit-Limit` = bucket capacity (decision 3) and `X-RateLimit-Remaining`. Both are set *before* the chain continues; the proxy in step 7 must keep them when copying backend headers.
+  - **Blocked:** `429`, `Retry-After` in whole seconds (rounded up, minimum 1, overflow-safe), `X-RateLimit-Remaining: 0` and `{"error":"rate_limited","retryAfterMs":n}`.
+- **The filter only runs when auth identified a client,** so 401s, 404s and actuator calls never use up tokens.
+- **Test isolation:**
+  - Buckets live as long as the Spring context, which tests share. So `RateLimitFilterTest` uses its own profile (`application-ratelimit-test.yml`) with routes that refill 1 token per hour, so nothing refills mid-test, and gives each test its own API key or IP.
+  - **Bug hit:** JsonPath reads `retryAfterMs` (~3,599,999) as an `Integer`, so a `Long` Hamcrest matcher threw `ClassCastException`. Fixed by using int literals.
+- **Live check** (`demo-free-key-1` on `/api/orders/1`, free tier: burst 10, 1 token/s): requests 1–10 showed `Remaining` 9→0, request 11 got `429` with `Retry-After: 1`.
+- **Tests:**
+  - `RateLimitKeysTest` (1).
+  - `RateLimitServiceTest` (5): NONE allows, capacity enforced, unbuilt algorithms still limited, buckets separated, key format.
+  - `RateLimitFilterTest` (9): headers on allowed requests, full 429 contract, premium burst, unlisted tier → default, separate clients, per-IP on public routes, NONE never limited, 401 not rate-limited, `Retry-After` rounding.
+
 ### Known gaps (Phase 2)
 - The mock order cache never evicts entries. That's fine for a mock; it restarts with each container.
 - Demo API keys are in plain text in `application.yml`. That's acceptable for a demo, but not for production.
