@@ -135,6 +135,20 @@ Branch: `phase-2/rate-limited-proxy`, cut from `main` after Phase 1 was merged (
 - **Bug hit:** adding a second, package-private constructor to `RouteMatcher` for tests made Spring fail with "No default constructor found". With two constructors, Spring won't guess which to use. The fix was to mark the public one with `@Autowired`.
 - **Tests:** `RouteMatcherTest` (5) and `RouteResolutionFilterTest` (5: no_route body, `/api/ordersXYZ`, query string ignored, encoded path decoded, actuator bypass).
 
+### Step 5: auth
+- **`AuthFilter`** runs only on routed requests (those with a route attribute), so unknown paths still get `404 no_route` and actuator stays open.
+  - **Private route:** `X-API-Key` → `ClientIdentity(clientId, tier)`. A missing, blank or unknown key gets `401 {"error":"invalid_api_key"}`.
+  - **Public route:** the identity is `ip:<address>` with the route's default tier. Any API key sent is ignored, so a premium key can't lift the per-IP login limit.
+  - The identity goes into a request attribute (for the rate limiter and the proxy) and into the MDC as `clientId`. Log lines now show `[correlationId] [clientId]`; the MDC is cleared in `finally`.
+- **`ApiKeyRegistry` stores only SHA-256 hashes of the keys** and looks up by the hash of the incoming key.
+  - The plain-text keys aren't kept in memory after startup, so a heap dump doesn't leak them.
+  - The string compare runs on digests, so its timing reveals nothing about the real key.
+  - The keys still sit in plain text in `application.yml` (known gap).
+- **`ClientIpResolver`:** uses `X-Real-IP` if it looks like an IP literal, otherwise the socket address. Anything else (hostnames, comma lists, empty) is ignored, so arbitrary strings can't become rate-limit keys.
+- **The client's tier is stored as given.** The rate limiter maps it to the route's effective tier (step 6), because one key can hit several routes with different tier lists.
+- **Tests:** `ApiKeyRegistryTest` (2), `ClientIpResolverTest` (3) and `AuthFilterTest` (7: no key, unknown or blank key, free and premium keys, public route by socket IP and by `X-Real-IP`, key ignored on a public route, unrouted requests skip auth, MDC cleared).
+
 ### Known gaps (Phase 2)
 - The mock order cache never evicts entries. That's fine for a mock; it restarts with each container.
 - Demo API keys are in plain text in `application.yml`. That's acceptable for a demo, but not for production.
+- **`X-Real-IP` can be spoofed until Nginx is in front (Phase 3).** Run locally, the gateway port is reachable directly, so a caller can send a fake `X-Real-IP` and get a fresh per-IP login budget each time. In Docker the gateways publish no ports and Nginx overwrites the header (plan section 5.7). A stricter option would accept the header only from a trusted proxy address.

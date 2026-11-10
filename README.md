@@ -2,7 +2,7 @@
 
 A rate-limiting API gateway that enforces per-client, per-route limits that stay **correct across multiple gateway instances**. It uses atomic Redis Lua scripts, per-route failure modes for Redis outages, per-backend circuit breakers, and consistent hashing for cache affinity.
 
-> **Status: Phase 2 in progress.** Mock backend, gateway config, correlation ID and route resolution done; next: auth, rate limiting and the proxy. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
+> **Status: Phase 2 in progress.** Mock backend, gateway config, correlation ID, route resolution and auth done; next: rate limiting and the proxy. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
 
 ## Built so far
 
@@ -14,6 +14,7 @@ A rate-limiting API gateway that enforces per-client, per-route limits that stay
 | 2 (in progress) | Gateway config: routes, tiers, demo API keys and upstreams from `application.yml`, validated at startup (the gateway refuses to start on bad config) | `GatewayPropertiesBindingTest`, `GatewayConfigValidatorTest`, `GatewayConfigCheckTest`, `RouteConfigTest` |
 | 2 (in progress) | Correlation ID on every request: reuses a safe `X-Correlation-Id` or generates one, returns it, and tags log lines with it | `CorrelationIdFilterTest`, `CorrelationIdFilterIntegrationTest` |
 | 2 (in progress) | Route resolution: longest path prefix wins, whole segments only; unknown paths get `404 no_route` | `RouteMatcherTest`, `RouteResolutionFilterTest` |
+| 2 (in progress) | Auth: private routes need a valid `X-API-Key` (else `401 invalid_api_key`); public routes identify callers by IP | `AuthFilterTest`, `ApiKeyRegistryTest`, `ClientIpResolverTest` |
 
 **Stack:** Java 21, Spring Boot 3.5 (MVC + virtual threads), Redis 7 + Lua, Resilience4j, Micrometer, Prometheus, Grafana, Nginx, Docker Compose, k6, Testcontainers
 
@@ -62,6 +63,8 @@ Until Phase 4, every route is enforced with the in-memory token bucket; the conf
 **Backend URL:** set `MOCK_BACKEND_URL` (default `http://localhost:8081`).
 
 **Routing:** the route with the longest matching path prefix wins, and a prefix matches whole path segments only (`/api/orders` matches `/api/orders/1`, not `/api/ordersXYZ`). A path no route matches gets `404 {"error":"no_route"}`. `/actuator/**` is served by the gateway itself.
+
+**Auth:** private routes (`/api/orders`, `/api/products`) need one of the demo keys in `X-API-Key`; a missing or unknown key gets `401 {"error":"invalid_api_key"}`. The public `/auth/login` route needs no key and limits callers per IP, taken from `X-Real-IP` (set by Nginx in Docker) or the connection address.
 
 **Correlation ID:** every response carries `X-Correlation-Id`. Send your own (1–64 characters of letters, digits, `-`, `_`) to trace a request across logs; anything else is replaced with a generated UUID.
 
