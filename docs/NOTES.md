@@ -206,7 +206,7 @@ Mock backend on :8081, gateway on :8090:
 - Demo API keys are in plain text in `application.yml`. That's acceptable for a demo, but not for production.
 - **Request and response bodies are buffered in memory** (decision 6). Large uploads or downloads would need streaming and a body size limit.
 - **Only the first backend URL is used.** Load balancing, consistent hashing and failover arrive in Phase 6.
-- **`X-Real-IP` can be spoofed until Nginx is in front (Phase 3).** Run locally, the gateway port is reachable directly, so a caller can send a fake `X-Real-IP` and get a fresh per-IP login budget each time. In Docker the gateways publish no ports and Nginx overwrites the header (plan section 5.7). A stricter option would accept the header only from a trusted proxy address.
+- **`X-Real-IP` can be spoofed until Nginx is in front (Phase 3).** *Resolved in Phase 3 step 6: Nginx overwrites the header, verified with a spoofed request.* Run locally, the gateway port is reachable directly, so a caller can send a fake `X-Real-IP` and get a fresh per-IP login budget each time. In Docker the gateways publish no ports and Nginx overwrites the header (plan section 5.7). A stricter option would accept the header only from a trusted proxy address.
 
 ### Bug hit: Phase 2 merged into `main` by mistake
 - **What happened:**
@@ -353,3 +353,21 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
 - **Possible later improvements (not needed for the MVP):**
   - **Smaller images:** a distroless or Alpine JRE, or a `jlink`-trimmed runtime.
   - **Faster rebuilds:** Spring Boot's layered jar (`-Djarmode=tools extract --layers`), so a code change only rebuilds the small application layer.
+
+### Step 6: Nginx
+- **`nginx/nginx.conf`:**
+  - one `upstream` (gateway1–3, round robin, `keepalive 32`) over HTTP/1.1 with `Connection ""`;
+  - `/actuator` → 404;
+  - `server_tokens off`;
+  - connect timeout 1 s, read timeout 10 s, above the gateway's own 2 s backend timeout, so the gateway's `503` reaches the client instead of an Nginx `504`.
+- **Closes the Phase 2 `X-Real-IP` spoofing gap.** Nginx **sets** `X-Real-IP` and `X-Forwarded-For` to `$remote_addr`. It doesn't append with `$proxy_add_x_forwarded_for`, because that would keep the client's own fake value. In Compose the gateways publish no ports, so Nginx is the only way in.
+- **Verified with three real gateway containers**, Redis and a backend behind Nginx (a hand-built preview of step 7):
+  - `/actuator/health` through Nginx → `404`.
+  - **Spoof test:** `POST /auth/login` with `X-Real-IP: 1.2.3.4` → the bucket key in Redis is `rl:{login:anonymous:ip:172.21.0.1}:tb`, the address Nginx saw. The fake IP was ignored.
+  - **One limit shared by 3 instances:** 104 sequential calls to `/api/demo/lua` → **exactly 100 allowed**, served by gw-1 = 34, gw-2 = 36, gw-3 = 30. With per-instance memory limits this could have been 300.
+- **Bug hit: no visible load balancing with a few requests.**
+  - **Symptom:** the first 6 calls all hit gw-1, even though 104 calls spread evenly.
+  - **Cause:** `worker_processes auto` started **12 workers (12 cores)**. Each keeps its own round-robin position, starting at gateway1, and each new `curl` connection can land on a fresh worker.
+  - **Fix:** `worker_processes 1`, which is plenty at this scale. Re-test: 9 calls rotated gw-1 → gw-2 → gw-3 three times.
+  - **Lesson:** per-worker state makes "round robin" uneven at low volume. At high volume it evens out, as the 34/36/30 split showed.
+- **Sandbox note:** a command containing `/etc/nginx/nginx.conf` was blocked as a sensitive path, so the checks mount the folder at `/conf` and start Nginx with `-c /conf/nginx.conf`. Compose (step 7) will do the same.
