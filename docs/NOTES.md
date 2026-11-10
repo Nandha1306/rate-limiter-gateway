@@ -120,6 +120,21 @@ Branch: `phase-2/rate-limited-proxy`, cut from `main` after Phase 1 was merged (
   - `GatewayConfigValidatorTest` (12): one test per rule, plus "all errors reported with labels" and "keys masked".
   - `GatewayConfigCheckTest` (3): defaults applied; bad config and bad limit stop startup.
 
+### Step 3: correlation ID filter
+- `CorrelationIdFilter` runs first on every request (actuator included). It reuses an incoming `X-Correlation-Id` only if it is 1–64 characters of `[A-Za-z0-9_-]`; otherwise it generates a UUID. **Validating blocks log injection** (e.g. a `\n` that forges a log line).
+- The ID goes into the MDC (shown in log lines via `logging.pattern.level`), a request attribute (for the proxy) and the response header. The MDC is cleared in `finally` because threads are reused.
+
+### Step 4: route resolution
+- **`RouteMatcher`** sorts routes by prefix length, longest first, so the most specific route wins. A prefix matches only whole path segments: `/api/orders` matches `/api/orders` and `/api/orders/1`, never `/api/ordersXYZ`. A `/` route would act as a catch-all.
+- **`RouteResolutionFilter`:**
+  - **No match:** answers `404 {"error":"no_route"}`.
+  - **Match:** stores the route in a request attribute, which the auth and rate-limit filters use to decide whether to run.
+  - **`/actuator/**`:** skipped entirely.
+- **Matching uses the decoded path** (`UrlPathHelper`), without the query string or `;` parameters. Otherwise `/api/%6Frders/1` would miss the `orders` route, so its rate limit wouldn't apply, while the backend still decodes it as `/api/orders/1`. A test covers this bypass.
+- **`ErrorResponses`** writes every gateway JSON error body; steps 5–7 reuse it.
+- **Bug hit:** adding a second, package-private constructor to `RouteMatcher` for tests made Spring fail with "No default constructor found". With two constructors, Spring won't guess which to use. The fix was to mark the public one with `@Autowired`.
+- **Tests:** `RouteMatcherTest` (5) and `RouteResolutionFilterTest` (5: no_route body, `/api/ordersXYZ`, query string ignored, encoded path decoded, actuator bypass).
+
 ### Known gaps (Phase 2)
 - The mock order cache never evicts entries. That's fine for a mock; it restarts with each container.
 - Demo API keys are in plain text in `application.yml`. That's acceptable for a demo, but not for production.

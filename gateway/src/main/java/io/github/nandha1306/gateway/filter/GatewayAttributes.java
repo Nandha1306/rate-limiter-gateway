@@ -5,6 +5,7 @@ package io.github.nandha1306.gateway.filter;
  */
 public final class GatewayAttributes {
     public static final String CORRELATION_ID = GatewayAttributes.class.getName() + ".correlationId";
+    public static final String ROUTE = GatewayAttributes.class.getName() + ".route";
 
     private GatewayAttributes() {
     }
