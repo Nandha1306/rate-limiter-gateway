@@ -167,7 +167,37 @@ Branch: `phase-2/rate-limited-proxy`, cut from `main` after Phase 1 was merged (
   - `RateLimitServiceTest` (5): NONE allows, capacity enforced, unbuilt algorithms still limited, buckets separated, key format.
   - `RateLimitFilterTest` (9): headers on allowed requests, full 429 contract, premium burst, unlisted tier → default, separate clients, per-IP on public routes, NONE never limited, 401 not rate-limited, `Retry-After` rounding.
 
+### Step 7: proxy
+- **`ProxyController`** is a catch-all `@RequestMapping("/**")` that forwards every request the filters let through. Actuator keeps working because its handler mapping has higher priority than `/**`.
+- **`ProxyClientConfig`:** a `RestClient` on the JDK `HttpClient` that speaks HTTP/1.1, never follows redirects (the client should see them), and uses connect 500 ms / read 2 s from `gateway.timeouts`.
+- **`ProxyService`** forwards the method, the **raw** path and query (still percent-encoded, exactly as the client sent them) and the body. It uses `exchange()` so 4xx/5xx responses come back as data instead of exceptions.
+  - A backend **5xx is passed through** as-is.
+  - **Connection failure or read timeout** → `503 {"error":"no_healthy_backend"}` with `Retry-After: 5`, plus a WARN log with the most specific cause.
+- **`ProxyHeaders`**, following plan section 6:
+  - **Both directions:** drops hop-by-hop headers (`Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade`, `Host`, `Content-Length`, `TE`, `Trailer`, `Proxy-*`, `Expect`) **and any header named in `Connection`** (RFC 7230).
+  - **To the backend:** never sends `X-API-Key`; always *overwrites* `X-Client-Id` (a spoofed one is replaced) and `X-Correlation-Id`.
+  - **To the client:** never lets the backend overwrite the gateway's own `X-RateLimit-*`, `X-Correlation-Id` or `X-Served-By`. Multi-valued headers such as two `Set-Cookie`s survive.
+  - **Adds** `X-Served-By: host:port` of the backend that answered.
+- **Phase 2 uses the first URL of the upstream pool.** Phase 6 replaces this with the consistent hash ring and failover.
+- **Tests run against a real HTTP server.** `StubBackend` (the JDK `HttpServer` on a random port) echoes back what it received, so the tests check what really went over the wire.
+  - `ProxyIntegrationTest` (7): method, path, query and body forwarded; API key stripped and client ID overwritten; correlation ID forwarded; hop-by-hop and `Connection`-named headers stripped; response headers copied except gateway-owned ones; 5xx passed through; slow backend → 503.
+  - `ProxyUpstreamDownTest` (1): closed port → 503.
+  - `ProxyServiceTest` (3): URL joining.
+- **Bug hit during the live check:** the first end-to-end run looked wrong (instance `mock-local` instead of `mock-1`, first request already a cache HIT).
+  - **Cause:** IntelliJ was already running `MockBackendApplication` on 8081, so the copy started from the terminal failed with "Port 8081 was already in use", and the gateway talked to the IntelliJ one.
+  - **Lesson:** check port owners (`Get-NetTCPConnection -LocalPort 8081`) before trusting an end-to-end result. The same lesson as the Jenkins issue in Phase 0.
+
+### Phase 2 "Done when": verified
+Mock backend on :8081, gateway on :8090:
+- `demo-free-key-1` on `/api/orders/1`: requests 1–10 → `200` with the order from the backend, `X-RateLimit-Remaining` 9→0, `X-Served-By: localhost:8081`, `X-Cache`, `X-Instance-Id`. Request 11 → **`429`, `Retry-After: 1`**.
+- `demo-premium-key-3`: still `200` (`Limit 100`, `Remaining 99`), so tiers have separate buckets.
+- `POST /auth/login` without a key: 5 × `200`, then `429` (5/min per IP).
+- No key → `401 invalid_api_key`. Unknown path → `404 no_route`. Backend chaos 100% → backend's `503` passed through.
+- Backend down → `503`, `Retry-After: 5`, `{"error":"no_healthy_backend"}`, and a WARN log line tagged `[correlationId] [user_2]`.
+
 ### Known gaps (Phase 2)
 - The mock order cache never evicts entries. That's fine for a mock; it restarts with each container.
 - Demo API keys are in plain text in `application.yml`. That's acceptable for a demo, but not for production.
+- **Request and response bodies are buffered in memory** (decision 6). Large uploads or downloads would need streaming and a body size limit.
+- **Only the first backend URL is used.** Load balancing, consistent hashing and failover arrive in Phase 6.
 - **`X-Real-IP` can be spoofed until Nginx is in front (Phase 3).** Run locally, the gateway port is reachable directly, so a caller can send a fake `X-Real-IP` and get a fresh per-IP login budget each time. In Docker the gateways publish no ports and Nginx overwrites the header (plan section 5.7). A stricter option would accept the header only from a trusted proxy address.
