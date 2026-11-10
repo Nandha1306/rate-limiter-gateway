@@ -6,6 +6,12 @@ spring:
   threads:
     virtual:
       enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 100ms
+      connect-timeout: 200ms
 
 server:
   port: 8080
@@ -15,12 +21,17 @@ management:
     web:
       exposure:
         include: health,info
+  health:
+    redis:
+      enabled: false
 
 logging:
   pattern:
     level: "%5p [%X{correlationId:-}] [%X{clientId:-}]"
 
 gateway:
+  limiter:
+    store: ${LIMITER_STORE:REDIS}
   timeouts:
     connect: 500ms
     read: 2s

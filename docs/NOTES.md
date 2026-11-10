@@ -207,3 +207,52 @@ Mock backend on :8081, gateway on :8090:
 - **Request and response bodies are buffered in memory** (decision 6). Large uploads or downloads would need streaming and a body size limit.
 - **Only the first backend URL is used.** Load balancing, consistent hashing and failover arrive in Phase 6.
 - **`X-Real-IP` can be spoofed until Nginx is in front (Phase 3).** Run locally, the gateway port is reachable directly, so a caller can send a fake `X-Real-IP` and get a fresh per-IP login budget each time. In Docker the gateways publish no ports and Nginx overwrites the header (plan section 5.7). A stricter option would accept the header only from a trusted proxy address.
+
+### Bug hit: Phase 2 merged into `main` by mistake
+- **What happened:**
+  1. PR #4 merged the Phase 2 branch straight into `main` instead of `release`.
+  2. It was reverted with `git revert -m 1` (#5).
+  3. Phase 2 then reached `release` with a regular merge (#6).
+- **Trap:** a reverted merge's commits stay in `main`'s history. `release` → `main` (#7) therefore changed **0 files**, because Git saw the same commits as already merged. A simulated merge (`git merge-tree --write-tree`) confirmed it before anything was claimed.
+- **Fix:** revert the revert on a branch from `main` (#8). Verified that the result is identical to `release` (`git diff release <branch>` empty).
+- **Lessons:**
+  - check the PR's base branch before merging;
+  - squash-merge feature branches into `release`, so `main` never sees the same commit IDs twice;
+  - after reverting a merge, re-merging needs a "revert of the revert".
+
+## Phase 3: Redis + 3 gateway instances (MVP)
+
+Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7f5`).
+
+### Decisions (agreed before coding)
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | `gateway.limiter.store`: `REDIS` (default) or `MEMORY` | The gateway and most tests can run without Redis; the in-memory bucket becomes the Redis fallback in Phase 5 |
+| 2 | Tests default to `MEMORY` (test-only `application.properties`); Redis tests use Testcontainers | The existing suite stays fast and needs no Docker |
+| 3 | Redis tests are `@Testcontainers(disabledWithoutDocker = true)` | Skipped locally when Docker is off, always run in CI |
+| 4 | Accuracy demo routes `/api/demo/naive` and `/api/demo/lua`, same limit (100/hour), different algorithm | A clean side-by-side; the slow refill keeps the expected count exactly 100 |
+| 5 | Backend URLs as one comma-separated `MOCK_BACKEND_URLS`, a different first backend per gateway | Indexed overrides replace whole lists (Phase 2 lesson); spreads load until Phase 6 |
+| 6 | `X-Gateway-Id` response header | Proves Nginx spreads requests across all 3 gateways |
+| 7 | k6 run as a Docker container | No local install; plan section 15's tool |
+| 8 | Nginx on `${NGINX_PORT:-8080}` (8088 on this machine because of Jenkins); backends on 8081–8083 | Plan section 13 plus the Phase 0 Jenkins lesson |
+
+**Race-demo care:**
+- No test asserts that the naive limiter *over*-admits, because a race isn't guaranteed on every run and that would make a flaky test. Tests assert it never *under*-admits, and log how much it over-admits.
+- The demo reports only counts actually measured.
+
+### Step 1: Redis client and store switch
+- **Added `spring-boot-starter-data-redis`.** Lettuce multiplexes commands over one connection, so a Redis round trip per request stays cheap even with thousands of virtual threads (plan section 5.2).
+- **`spring.data.redis.timeout: 100ms` and `connect-timeout: 200ms`.** Lettuce's default command timeout is 60 s, so a Redis outage would make every request hang before any fallback could run (plan section 5.1). Host and port come from `REDIS_HOST` / `REDIS_PORT`.
+- **`LimiterProperties` (`gateway.limiter.store`, from `LIMITER_STORE`):**
+  - It's a separate record from `GatewayProperties`, so existing constructors and tests stay untouched.
+  - Invalid values stop startup.
+  - The switch takes effect when the Redis limiter is wired in (steps 2–3).
+- **Bug avoided: Redis would have made the gateway "DOWN".**
+  - Adding Spring Data Redis auto-registers a Redis health check, so `/actuator/health` returned **503** with no Redis running. Verified by re-running the health test with `management.health.redis.enabled=true`.
+  - That would have broken two existing tests. Worse, Docker and Nginx would treat a gateway as dead whenever Redis is down, which is the opposite of plan section 5.1, where the gateway keeps serving on a fallback.
+  - **Fix:** `management.health.redis.enabled: false`. Redis status becomes a metric in Phase 8 rather than a liveness signal.
+- **Tests:**
+  - `RedisClientSettingsTest` (3): timeouts, tests use `MEMORY`, health `UP` without Redis.
+  - `LimiterPropertiesTest` (3): default `REDIS`, switch to `MEMORY`, unknown value fails startup.
+  - The full suite (112) passes with no Redis running.

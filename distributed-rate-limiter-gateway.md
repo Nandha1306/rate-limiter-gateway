@@ -519,7 +519,7 @@ Each phase has a **Done when** line. Don't move on until it's true.
 - **Done when:** curl shows 200s, then 429s with a correct Retry-After. ✅ (verified end to end; see docs/NOTES.md)
 
 ### Phase 3: Redis + multiple instances (Days 10-15), MVP
-- [ ] Redis client with the 100 ms timeout
+- [x] Redis client with the 100 ms timeout
 - [ ] Token bucket Lua script using Redis time; key format with hash tags
 - [ ] Naive limiter for the race demo
 - [ ] Minimal Docker Compose: Redis, 3 gateways, Nginx, 3 backends

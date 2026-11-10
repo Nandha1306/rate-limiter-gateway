@@ -2,7 +2,7 @@
 
 A rate-limiting API gateway that enforces per-client, per-route limits that stay **correct across multiple gateway instances**. It uses atomic Redis Lua scripts, per-route failure modes for Redis outages, per-backend circuit breakers, and consistent hashing for cache affinity.
 
-> **Status: Phase 2 done** (rate-limited proxy, in memory, single instance). Next: Phase 3, Redis + Lua shared across 3 gateway instances in Docker. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
+> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). Redis client added; next: the token bucket Lua script. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
 
 ## Built so far
 
@@ -79,6 +79,8 @@ Until Phase 4, every route is enforced with the in-memory token bucket; the conf
 | `demo-premium-key-3` | `user_3` | premium |
 
 **Backend URL:** set `MOCK_BACKEND_URL` (default `http://localhost:8081`).
+
+**Rate limit store** (takes effect once the Redis limiter is wired in, Phase 3 steps 2–3): `LIMITER_STORE=REDIS` (default) keeps limits in Redis, shared by all gateway instances. Set `REDIS_HOST` / `REDIS_PORT` (default `localhost:6379`). Redis calls time out after 100 ms. `LIMITER_STORE=MEMORY` keeps limits in this instance only, for running without Redis. Redis is deliberately not part of `/actuator/health`: the gateway stays up when Redis is down.
 
 **Routing:** the route with the longest matching path prefix wins, and a prefix matches whole path segments only (`/api/orders` matches `/api/orders/1`, not `/api/ordersXYZ`). A path no route matches gets `404 {"error":"no_route"}`. `/actuator/**` is served by the gateway itself.
 
