@@ -40,6 +40,8 @@ curl localhost:8080/actuator/health                # {"status":"UP"}
 
 On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 
+**Test manual:** [docs/TEST-MANUAL.md](docs/TEST-MANUAL.md) lists every automated and manual check per phase, with exact commands, expected results and troubleshooting.
+
 **Port 8080 already taken (e.g. by Jenkins)?** Create the gitignored `gateway/src/main/resources/application-local.yml` with `server.port: 8090`. The gateway imports it automatically when it exists, so the IDE run button, Maven and `java -jar` all pick it up. For a one-off run you can also pass `--server.port=8090`.
 
 ## Quick start (Docker Compose)
