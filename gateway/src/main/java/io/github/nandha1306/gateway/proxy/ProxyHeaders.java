@@ -21,7 +21,7 @@ public final class ProxyHeaders {
             GatewayHeaders.API_KEY, GatewayHeaders.CLIENT_ID, GatewayHeaders.CORRELATION_ID));
     private static final Set<String> SET_BY_GATEWAY = caseInsensitive(List.of(
             GatewayHeaders.RATE_LIMIT_LIMIT, GatewayHeaders.RATE_LIMIT_REMAINING,
-            GatewayHeaders.CORRELATION_ID, GatewayHeaders.SERVED_BY));
+            GatewayHeaders.CORRELATION_ID, GatewayHeaders.SERVED_BY, GatewayHeaders.GATEWAY_ID));
 
     private ProxyHeaders() {
     }

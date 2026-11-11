@@ -6,6 +6,12 @@ spring:
   threads:
     virtual:
       enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 100ms
+      connect-timeout: 200ms
 
 server:
   port: 8080
@@ -15,19 +21,25 @@ management:
     web:
       exposure:
         include: health,info
+  health:
+    redis:
+      enabled: false
 
 logging:
   pattern:
     level: "%5p [%X{correlationId:-}] [%X{clientId:-}]"
 
 gateway:
+  instance:
+    id: ${INSTANCE_ID:gateway-local}
+  limiter:
+    store: ${LIMITER_STORE:REDIS}
   timeouts:
     connect: 500ms
     read: 2s
   upstreams:
     mock:
-      urls:
-        - ${MOCK_BACKEND_URL:http://localhost:8081}
+      urls: ${MOCK_BACKEND_URLS:http://localhost:8081}
   api-keys:
     "[demo-free-key-1]":
       client-id: user_1
@@ -82,4 +94,28 @@ gateway:
         anonymous:
           limit: 5
           window-seconds: 60
+          burst: 0
+    - id: demo-naive
+      path-prefix: /api/demo/naive
+      upstream: mock
+      public-route: false
+      algorithm: NAIVE_FIXED_WINDOW
+      failure-mode: LOCAL_FALLBACK
+      default-tier: free
+      tiers:
+        free:
+          limit: 100
+          window-seconds: 3600
+          burst: 0
+    - id: demo-lua
+      path-prefix: /api/demo/lua
+      upstream: mock
+      public-route: false
+      algorithm: TOKEN_BUCKET
+      failure-mode: LOCAL_FALLBACK
+      default-tier: free
+      tiers:
+        free:
+          limit: 100
+          window-seconds: 3600
           burst: 0

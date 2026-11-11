@@ -2,7 +2,7 @@
 
 A rate-limiting API gateway that enforces per-client, per-route limits that stay **correct across multiple gateway instances**. It uses atomic Redis Lua scripts, per-route failure modes for Redis outages, per-backend circuit breakers, and consistent hashing for cache affinity.
 
-> **Status: Phase 2 done** (rate-limited proxy, in memory, single instance). Next: Phase 3, Redis + Lua shared across 3 gateway instances in Docker. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
+> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). The gateway now rate-limits through Redis: the Lua token bucket allowed exactly 100 of 1020 concurrent requests from 3 clients, while the naive limiter allowed 112–136. **Phase 3 (MVP) done:** one `docker compose up` runs Redis, 3 gateways, 3 backends and Nginx. Under 1000 concurrent requests, the Lua limiter allows exactly 100 across all gateways, while a naive limiter over-admits (see the race condition demo below). Next: Phase 4, more algorithms. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
 
 ## Built so far
 
@@ -33,18 +33,95 @@ Requires JDK 21. The Maven wrapper downloads Maven itself.
 
 ```bash
 ./mvnw verify                                      # build + test everything
-./mvnw -f gateway/pom.xml spring-boot:run          # run the gateway on :8080
+./mvnw -f gateway/pom.xml spring-boot:run          # run the gateway on :8080 (fresh clone) or :8090 (with application-local.yml)
 ./mvnw -f mock-backend/pom.xml spring-boot:run     # run the mock backend on :8081
-curl localhost:8080/actuator/health                # {"status":"UP"}
+curl localhost:8090/actuator/health                # {"status":"UP"}
 ```
 
 On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 
+**Test manual:** [docs/TEST-MANUAL.md](docs/TEST-MANUAL.md) lists every automated and manual check per phase, with exact commands, expected results and troubleshooting.
+
 **Port 8080 already taken (e.g. by Jenkins)?** Create the gitignored `gateway/src/main/resources/application-local.yml` with `server.port: 8090`. The gateway imports it automatically when it exists, so the IDE run button, Maven and `java -jar` all pick it up. For a one-off run you can also pass `--server.port=8090`.
+
+## Quick start (Docker Compose)
+
+Requires Docker. One command starts Redis, three gateways, three mock backends and Nginx, and waits until all are healthy:
+
+```bash
+docker compose up -d --build --wait            # Nginx on :8088, no settings needed
+```
+
+```bash
+curl -i -H "X-API-Key: demo-free-key-1" localhost:8088/api/orders/1   # X-Gateway-Id rotates gw-1, gw-2, gw-3
+curl -i -H "X-API-Key: demo-free-key-1" localhost:8088/api/demo/lua   # shared limit: 100 per hour across all gateways
+curl -X POST localhost:9081/chaos -H "Content-Type: application/json" -d '{"failureRate":1.0}'   # break backend-1
+docker compose down                                                   # stop and remove everything
+```
+
+| Service | Host port | Notes |
+|---|---|---|
+| `nginx` | `${NGINX_PORT:-8088}` | The only way into the gateways; sets `X-Real-IP`; hides `/actuator` |
+| `gateway1/2/3` | none | Wait for Redis to be healthy; each lists a different backend first; Redis timeout `${REDIS_TIMEOUT:-250ms}` |
+| `backend-1/2/3` | 9081, 9082, 9083 | Published only for the chaos endpoint |
+| `redis` | none | Shared rate-limit state; persistence off |
+
+Compose's ports don't overlap with the local run (mock backend 8081, gateway 8090), so both can run at once. The full port map and step-by-step run guide are in [docs/TEST-MANUAL.md](docs/TEST-MANUAL.md).
+
+## Race condition demo: naive vs Lua, across 3 gateways
+
+Two routes share the same limit (100 requests per hour) and differ only in algorithm:
+- **`/api/demo/naive`:** reads the count, checks it, and increments it as three separate Redis calls.
+- **`/api/demo/lua`:** does read, refill, take and save in one atomic Lua script.
+
+k6 fires **1000 requests from 50 concurrent users through Nginx**, so the three gateways race each other.
+
+| Run (warm) | Lua token bucket | Naive fixed window |
+|---|---|---|
+| 1 | **100** allowed (gw-1 35 · gw-2 33 · gw-3 32) | **104** allowed |
+| 2 | **100** allowed (29 · 35 · 36) | **111** allowed |
+| 3 | **100** allowed (33 · 36 · 31) | **116** allowed |
+
+- The Lua limit holds exactly, even though no single gateway saw all the traffic.
+- The naive limiter over-admits by 4–16%. Several gateways read "99", all pass the check, and all increment.
+- Redis's own counters match these numbers. Measured on a laptop with Docker Desktop; exact naive numbers vary run to run.
+
+**Reproduce it** (stack running via the quick start; PowerShell: replace `$PWD/loadtest` with `${PWD}\loadtest`):
+
+```bash
+# warm up the JVMs first (ignore the result; repeat until "unexpected: 0", usually 2-3 runs after startup)
+docker run --rm --network rate-limiter-gateway_default -v "$PWD/loadtest:/scripts:ro" \
+  -e API_KEY=demo-free-key-2 -e TARGET_PATH=/api/demo/lua grafana/k6 run --quiet /scripts/k6-script.js
+
+# measure: clear the demo buckets, then run each route
+docker compose exec redis redis-cli DEL "rl:{demo-lua:free:user_1}:tb" "rl:{demo-naive:free:user_1}:nfw"
+docker run --rm --network rate-limiter-gateway_default -v "$PWD/loadtest:/scripts:ro" \
+  -e TARGET_PATH=/api/demo/lua grafana/k6 run --quiet /scripts/k6-script.js
+docker run --rm --network rate-limiter-gateway_default -v "$PWD/loadtest:/scripts:ro" \
+  -e TARGET_PATH=/api/demo/naive grafana/k6 run --quiet /scripts/k6-script.js
+```
+
+**Why warm up:** right after startup, cold JVMs occasionally take longer than the gateway's 100 ms Redis timeout, and those requests fail with `500`. Inside Redis the script takes about 0.15 ms. Phase 5 adds a fallback so a timeout no longer means an error. Even in cold runs, the Lua route never allowed more than 100.
+
+## Docker images
+
+Each module has a multi-stage `Dockerfile`: Maven builds the jar, and a JRE-only image runs it as a non-root user, with the heap capped at 75% of the container's memory.
+
+```bash
+docker build -t rlg-gateway:dev gateway
+docker build -t rlg-mock-backend:dev mock-backend
+```
+
+| Image | Port | Environment |
+|---|---|---|
+| `rlg-gateway` | 8080 | `INSTANCE_ID`, `REDIS_HOST`, `REDIS_PORT`, `MOCK_BACKEND_URLS`, `LIMITER_STORE` |
+| `rlg-mock-backend` | 8081 | `INSTANCE_ID` |
+
+`application-local.yml` is excluded by `.dockerignore`, so images always use the committed defaults. CI builds both images on every push. Docker Compose (next step) wires them together with Redis and Nginx.
 
 ## Try it locally
 
-Start `MockBackendApplication` (:8081) and `GatewayApplication` (:8080, or :8090 with `application-local.yml`), then:
+Start Redis (`docker run -d -p 6379:6379 redis:7-alpine`), or run the gateway with `LIMITER_STORE=MEMORY`. Then start `MockBackendApplication` (:8081) and `GatewayApplication` (:8080, or :8090 with `application-local.yml`), and:
 
 ```bash
 curl -i -H "X-API-Key: demo-free-key-1" localhost:8090/api/orders/1   # 200, X-RateLimit-Remaining: 9 ... 0
@@ -67,6 +144,10 @@ Routes, tiers, API keys and upstreams live under `gateway.*` in `gateway/src/mai
 | `orders` | `/api/orders` | API key | Token bucket | Local fallback | free: 60/min, burst 10 · premium: 600/min, burst 100 |
 | `products` | `/api/products` | API key | Sliding window counter | Fail open | free: 100/min · premium: 1000/min |
 | `login` | `/auth/login` | Public (per IP) | Sliding window log | Local fallback | anonymous: 5/min |
+| `demo-naive` | `/api/demo/naive` | API key | Naive fixed window (race demo) | Local fallback | free: 100/hour |
+| `demo-lua` | `/api/demo/lua` | API key | Token bucket (Lua) | Local fallback | free: 100/hour |
+
+The two `demo-*` routes exist for the accuracy test: same limit, different algorithm. 100 per *hour* means almost nothing refills during a test, so the correct result is exactly 100 allowed. Their buckets last an hour, so clear them in Redis before re-running a test (step 8 automates this).
 
 Until Phase 4, every route is enforced with the in-memory token bucket; the configured algorithm takes effect when the Redis algorithms land.
 
@@ -78,7 +159,11 @@ Until Phase 4, every route is enforced with the in-memory token bucket; the conf
 | `demo-free-key-2` | `user_2` | free |
 | `demo-premium-key-3` | `user_3` | premium |
 
-**Backend URL:** set `MOCK_BACKEND_URL` (default `http://localhost:8081`).
+**Backend URLs:** set `MOCK_BACKEND_URLS` to one or more comma-separated URLs (default `http://localhost:8081`). Until consistent hashing (Phase 6), the first URL serves all requests.
+
+**Instance ID:** set `INSTANCE_ID` (default `gateway-local`). Every response says which gateway answered in `X-Gateway-Id`.
+
+**Rate limit store:** `LIMITER_STORE=REDIS` (default) keeps limits in Redis, shared by all gateway instances, so **a Redis server must be running**. Without it, limited requests get `500` until Phase 5 adds the fallback. For example: `docker run -d -p 6379:6379 redis:7-alpine`. Set `REDIS_HOST` / `REDIS_PORT` (default `localhost:6379`). Redis calls time out after 100 ms. `LIMITER_STORE=MEMORY` keeps limits in this instance only, for running without Redis. Redis is deliberately not part of `/actuator/health`: the gateway stays up when Redis is down.
 
 **Routing:** the route with the longest matching path prefix wins, and a prefix matches whole path segments only (`/api/orders` matches `/api/orders/1`, not `/api/ordersXYZ`). A path no route matches gets `404 {"error":"no_route"}`. `/actuator/**` is served by the gateway itself.
 
@@ -109,6 +194,7 @@ Every response from `/api/**` and `/auth/**` carries `X-Instance-Id` (the replic
 | POST | `/api/orders` | Creates an order (`{"item":"book"}`, body optional) and returns `201` with `Location` |
 | GET | `/api/products` | Fixed product catalogue |
 | POST | `/auth/login` | Returns a random token |
+| GET | `/api/demo/**` | `{"ok":true,"instanceId":...}`: cheap target for the accuracy demo routes |
 | GET / POST | `/chaos` | Reads or sets `{"failureRate": 0..1, "latencyMs": 0..60000}`. Omitted fields default to 0. Applies to `/api/**` and `/auth/**`, never to `/chaos` itself |
 
 ```bash
