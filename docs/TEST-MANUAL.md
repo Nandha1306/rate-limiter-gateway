@@ -17,7 +17,17 @@ There are two ways to run it. Both were verified on 2026-11-11.
 | **A. Docker Compose (recommended)** | Redis + 3 gateways + 3 mock backends + Nginx | The real distributed setup; demos; the accuracy test |
 | **B. Local, no Docker** | 1 mock backend + 1 gateway on your machine | Quick development and debugging in IntelliJ |
 
-Modes A and B both use port **8081**, so stop one before starting the other.
+**Port layout:** every host port is unique, so Jenkins, Mode A and Mode B can all run at the same time (verified 2026-11-11).
+
+| Host port | Used by | Mode |
+|---|---|---|
+| 8080 | Jenkins (not ours) | — |
+| **8088** | Nginx, the entry point (Compose default; override with `NGINX_PORT`) | A |
+| **9081, 9082, 9083** | backend-1/2/3, published only for their `/chaos` endpoint | A |
+| 8081 | Mock backend | B |
+| 8090 | Gateway (from the gitignored `application-local.yml`) | B |
+| 6379 | Redis, only if you start one for Mode B | B |
+| none | Gateways and Redis inside Compose (internal only) | A |
 
 ### Mode A: full stack with Docker Compose
 
@@ -29,13 +39,12 @@ docker version          # must show a "Server" section, not an error
 **Step 2: open PowerShell in the project root and check the ports are free:**
 ```powershell
 cd D:\rate-limiter-gateway
-Get-NetTCPConnection -State Listen -LocalPort 8081,8082,8083,8088 -ErrorAction SilentlyContinue
+Get-NetTCPConnection -State Listen -LocalPort 8088,9081,9082,9083 -ErrorAction SilentlyContinue
 ```
-Empty output means the ports are free. If something is listening, stop it first, e.g. an IntelliJ run or an old gateway.
+Empty output means the ports are free. If something is listening, stop it first.
 
-**Step 3: build and start everything.** Nginx goes on **8088** because Jenkins owns 8080 on this machine.
+**Step 3: build and start everything.** No environment variables needed: Nginx defaults to **8088**, and the gateways' Redis timeout defaults to **250 ms** in Compose.
 ```powershell
-$env:NGINX_PORT = "8088"
 docker compose up -d --build --wait
 ```
 - The first build takes several minutes; later builds take about a minute.
@@ -48,7 +57,7 @@ docker compose ps
 - **Expected:** every service `healthy` (Nginx shows `Up`).
 - Gateways show only `8080/tcp` (internal); Nginx shows `0.0.0.0:8088->80/tcp`.
 
-**Step 5: warm up the JVMs.** Freshly started gateways can briefly exceed the 100 ms Redis timeout. Repeat until the summary says `unexpected: 0`, usually 2–3 runs:
+**Step 5: warm up the JVMs.** Freshly started gateways can briefly exceed the Redis timeout. Repeat until the summary says `unexpected: 0`, usually 1–3 runs:
 ```powershell
 docker run --rm --network rate-limiter-gateway_default -v "${PWD}\loadtest:/scripts:ro" -e API_KEY=demo-free-key-2 grafana/k6 run --quiet /scripts/k6-script.js
 ```
@@ -69,9 +78,9 @@ docker compose exec redis redis-cli DEL "rl:{demo-lua:free:user_1}:tb" "rl:{demo
 docker run --rm --network rate-limiter-gateway_default -v "${PWD}\loadtest:/scripts:ro" -e TARGET_PATH=/api/demo/lua grafana/k6 run --quiet /scripts/k6-script.js
 docker run --rm --network rate-limiter-gateway_default -v "${PWD}\loadtest:/scripts:ro" -e TARGET_PATH=/api/demo/naive grafana/k6 run --quiet /scripts/k6-script.js
 
-# Chaos: make backend-1 fail, then switch it back
-curl.exe -X POST -H "Content-Type: application/json" -d '{\"failureRate\":1.0}' http://localhost:8081/chaos
-curl.exe -X POST -H "Content-Type: application/json" -d '{}' http://localhost:8081/chaos
+# Chaos: make backend-1 fail (served by gw-1), then switch it back
+curl.exe -X POST -H "Content-Type: application/json" -d '{\"failureRate\":1.0}' http://localhost:9081/chaos
+curl.exe -X POST -H "Content-Type: application/json" -d '{}' http://localhost:9081/chaos
 ```
 
 **Step 8: look inside:**
@@ -84,17 +93,22 @@ docker compose exec redis redis-cli FLUSHALL                           # reset a
 **Step 9: stop:**
 ```powershell
 docker compose down                     # stops and removes all containers and the network
-Remove-Item Env:NGINX_PORT
 ```
 To start again later, repeat steps 3–5.
+
+**Optional settings** (set before step 3, e.g. `$env:NGINX_PORT = "8099"`):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NGINX_PORT` | `8088` | Host port of the entry point |
+| `REDIS_TIMEOUT` | `250ms` | Gateways' Redis command timeout in Compose. The application default is 100 ms (plan section 5.1); on this laptop 100 ms gave sporadic `500`s under load, while 250 ms gave 0 errors in 5/5 rounds |
 
 ### Mode B: local, without Docker
 
 Uses the in-memory limiter (`LIMITER_STORE=MEMORY`), so no Redis is needed. Limits are per gateway process.
 
-**Step 1: make sure 8081 and 8090 are free** (stop the Compose stack first if it's running):
+**Step 1: make sure 8081 and 8090 are free.** The Compose stack can keep running; it doesn't use these ports.
 ```powershell
-docker compose down
 Get-NetTCPConnection -State Listen -LocalPort 8081,8090 -ErrorAction SilentlyContinue   # expect no output
 ```
 
@@ -146,8 +160,9 @@ Details in section 2.
 |---|---|
 | **8080** | **Jenkins.** Don't use it |
 | 8090 | Local gateway (via the gitignored `application-local.yml`) |
-| 8088 | Nginx in Compose (`NGINX_PORT=8088`) |
-| 8081–8083 | Mock backends |
+| 8088 | Nginx in Compose (default) |
+| 9081–9083 | Compose backends (chaos endpoint) |
+| 8081 | Local mock backend (Mode B) |
 | 6379 / 16379 | Redis |
 
 **PowerShell notes:**
@@ -294,12 +309,14 @@ Run the gateway with Redis (P2 setup, Redis option) and send a few P2-01 request
 | ID | Steps | Expected |
 |---|---|---|
 | P3-10 | Nginx syntax: `docker run --rm --add-host gateway1:127.0.0.1 --add-host gateway2:127.0.0.1 --add-host gateway3:127.0.0.1 -v "${PWD}\nginx:/conf:ro" nginx:alpine nginx -t -c /conf/nginx.conf` | `syntax is ok`, `test is successful` |
-| P3-11 | `$env:NGINX_PORT="8088"; docker compose up -d --build --wait`, then `docker compose ps` | Exit 0; all services `healthy`; gateways show only `8080/tcp` (no host port); Nginx `0.0.0.0:8088->80` |
+| P3-11 | `docker compose up -d --build --wait`, then `docker compose ps` | Exit 0; all services `healthy`; gateways show only `8080/tcp` (no host port); Nginx `0.0.0.0:8088->80`; backends `9081–9083->8081` |
 | P3-12 | `1..6 \| % { curl.exe -s -i -H "X-API-Key: demo-premium-key-3" http://localhost:8088/api/orders/$_ \| Select-String "X-Gateway-Id\|X-Served-By" }` | Rotates **gw-1 → gw-2 → gw-3**; each gateway is served by its own backend (`backend-1/2/3:8081`) |
 | P3-13 | `curl.exe -s -o NUL -w "%{http_code}" http://localhost:8088/actuator/health` | `404` (hidden by Nginx) |
 | P3-14 | Spoofing: `curl.exe -s -o NUL -X POST -H "X-Real-IP: 1.2.3.4" http://localhost:8088/auth/login`, then `docker compose exec redis redis-cli --scan --pattern "rl:{login*"` | Key uses the **real** address (e.g. `ip:172.x.0.1`), **not** `1.2.3.4` |
 | P3-15 | Shared limit: `docker compose exec redis redis-cli DEL "rl:{demo-lua:free:user_2}:tb"`, then 104 sequential calls with `demo-free-key-2` to `http://localhost:8088/api/demo/lua` | **Exactly 100** `200`s and 4 `429`s, spread over gw-1/2/3 |
-| P3-16 | `curl.exe http://localhost:8081/chaos` | `{"failureRate":0.0,"latencyMs":0}`: the backends are reachable for chaos |
+| P3-16 | `curl.exe http://localhost:9081/chaos` | `{"failureRate":0.0,"latencyMs":0}`: the backends are reachable for chaos |
+| P3-21 | With the Compose stack running, also start Mode B (mock on 8081, gateway on 8090 with `LIMITER_STORE=MEMORY`) | Both modes answer at the same time: `:8088` rotates gw-1/2/3, `:8090` returns `X-Gateway-Id: gateway-local`. No port clashes |
+| P3-22 | `docker compose exec gateway1 printenv SPRING_DATA_REDIS_TIMEOUT` | `250ms` (or your `REDIS_TIMEOUT`) |
 
 ### 6.4 Accuracy test: naive vs Lua (Phase 3 "Done when")
 
@@ -340,6 +357,8 @@ docker compose exec redis redis-cli GET "rl:{demo-naive:free:user_1}:nfw"
 | Redis tests show `Skipped` | Docker Desktop not running | Start it; re-run |
 | `500` on the first request(s) after startup | Cold JVM exceeded the 100 ms Redis timeout | Should not happen since the warm-up; check for `Redis connection ready` in the log |
 | CI fails, local passes | A test depended on something running locally | Run §2.4 (CI-like check) |
+| k6 reports every request as `unexpected` while `curl` via 8088 works | k6 runs inside the Docker network and calls `http://nginx`, i.e. port 80; Nginx is listening on a different port inside its container | Keep `listen 80` in `nginx.conf` and `:80` in the Compose mapping. Container ports can't clash with the host, so 80 is always safe |
+| Sporadic `unexpected` (500) during k6 even after warm-up | Redis timeout too tight for this machine's load | Compose already defaults to 250 ms; raise it further with `REDIS_TIMEOUT`, or close other heavy processes |
 | `curl` behaves oddly in PowerShell | `curl` is `Invoke-WebRequest` there | Use `curl.exe` |
 
 ---
@@ -353,3 +372,4 @@ docker compose exec redis redis-cli GET "rl:{demo-naive:free:user_1}:nfw"
 | 2026-11-10 | 2 | 106 gateway + 12 mock | 10×200 then 429 `Retry-After: 1`; 401/404/503 contract; spoofed client ID replaced |
 | 2026-11-11 | 3 | 137 gateway + 13 mock, Redis tests not skipped | Compose healthy in 68 s; rotation gw-1/2/3; spoofed `X-Real-IP` ignored; accuracy: Lua 100/100/100, naive 104/111/116 |
 | 2026-11-11 | 3 (re-run) | — | Fresh `compose up` (63 s); rotation, 10×200 → 429 `Retry-After: 1`, 401/404 contract OK; after 1 warm-up still 10/22 `500`s, after 2+ rounds 0; Lua 100/100/100, naive 108/105/108 |
+| 2026-11-11 | 3 (ports) | 137 gateway + 13 mock | New port layout (8088 / 9081–9083 Compose, 8081 / 8090 local): both modes ran **simultaneously**; Nginx back to `listen 80` (81 had broken every k6 run); Redis timeout 250 ms in Compose → 5/5 rounds 0 errors, Lua 100 ×5, naive 113/102/102/113/103 |

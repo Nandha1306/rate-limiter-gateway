@@ -31,6 +31,7 @@ x-gateway-env: &gateway-env
   REDIS_HOST: redis
   REDIS_PORT: "6379"
   LIMITER_STORE: REDIS
+  SPRING_DATA_REDIS_TIMEOUT: ${REDIS_TIMEOUT:-250ms}
 
 services:
   redis:
@@ -48,21 +49,21 @@ services:
     environment:
       INSTANCE_ID: backend-1
     ports:
-      - "8081:8081"
+      - "9081:8081"
 
   backend-2:
     <<: *backend
     environment:
       INSTANCE_ID: backend-2
     ports:
-      - "8082:8081"
+      - "9082:8081"
 
   backend-3:
     <<: *backend
     environment:
       INSTANCE_ID: backend-3
     ports:
-      - "8083:8081"
+      - "9083:8081"
 
   gateway1:
     <<: *gateway
@@ -92,7 +93,7 @@ services:
     volumes:
       - ./nginx:/conf:ro
     ports:
-      - "${NGINX_PORT:-8080}:81"
+      - "${NGINX_PORT:-8088}:80"
     depends_on:
       gateway1:
         condition: service_healthy

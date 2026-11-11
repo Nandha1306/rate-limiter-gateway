@@ -396,6 +396,32 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
   - **Lesson:** a retry count that barely works on a quiet dev machine has no margin once real startup contention appears.
 - **Mistake to avoid:** `redis-cli --latency-history` runs until stopped. Running it through a script hung the command until the task was killed.
 
+### Port layout and Redis timeout in Compose (after step 8)
+- **Goal:** nothing on this machine clashes. Jenkins, the Compose stack and the local run can all run at once.
+- **Host-side changes** (container ports can never clash with the host):
+  - Nginx's host port now **defaults to 8088** (was 8080, Jenkins'), so no `NGINX_PORT` is needed.
+  - Compose backends moved from 8081–8083 to **9081–9083**, freeing 8081 for the local or IntelliJ mock backend.
+  - **Final map:**
+
+    | Host port | Owner |
+    |---|---|
+    | 8080 | Jenkins |
+    | 8088 | Nginx (Compose) |
+    | 9081–9083 | Compose backends |
+    | 8081 | Local mock backend |
+    | 8090 | Local gateway |
+
+  - **Verified by running both modes at the same time:** `:8088` rotated gw-1/2/3, while `:8090` answered as `gateway-local` from the local mock on 8081.
+- **Bug hit: changing Nginx's *container* port to 81 broke every k6 run.**
+  - **Symptom:** a commit changed `listen 80` → `listen 81` (and the Compose mapping to `:81`). curl via the host still worked, but k6 got **1000/1000 unexpected**.
+  - **Cause:** k6 runs inside the Docker network and calls `http://nginx`, i.e. port 80.
+  - **Fix:** back to `listen 80` / `:80`.
+  - **Lesson:** the clash-free work is all about host ports; leave container ports at their standard values.
+- **Redis timeout in Compose is now `${REDIS_TIMEOUT:-250ms}`** (via `SPRING_DATA_REDIS_TIMEOUT`); the application default stays 100 ms.
+  - **Data behind it:** at 100 ms, warm runs on this laptop still had sporadic `500` timeouts, e.g. 26 in one round, and Lua at 99 because 4 granted permits never reached the client. At 250 ms, **5/5 rounds had 0 errors**: Lua 100 ×5, naive 113/102/102/113/103 with matching Redis counters.
+  - **Trade-off:** if Redis is truly down, a request waits up to 250 ms instead of 100 ms before failing. That's still fast; Lettuce's default was 60 s.
+  - Phase 5's fallback is still the real answer to slow or missing Redis. `REDIS_TIMEOUT=100ms` restores the plan's value.
+
 ### Step 8: accuracy test (Phase 3 "Done when")
 - **`loadtest/k6-script.js`** (plan section 15):
   - **Scenario `accuracy`:** 1000 requests from 50 VUs (`shared-iterations`).

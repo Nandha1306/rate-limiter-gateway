@@ -33,9 +33,9 @@ Requires JDK 21. The Maven wrapper downloads Maven itself.
 
 ```bash
 ./mvnw verify                                      # build + test everything
-./mvnw -f gateway/pom.xml spring-boot:run          # run the gateway on :8080
+./mvnw -f gateway/pom.xml spring-boot:run          # run the gateway on :8080 (fresh clone) or :8090 (with application-local.yml)
 ./mvnw -f mock-backend/pom.xml spring-boot:run     # run the mock backend on :8081
-curl localhost:8080/actuator/health                # {"status":"UP"}
+curl localhost:8090/actuator/health                # {"status":"UP"}
 ```
 
 On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
@@ -49,23 +49,24 @@ On Windows PowerShell, use `.\mvnw.cmd` instead of `./mvnw`.
 Requires Docker. One command starts Redis, three gateways, three mock backends and Nginx, and waits until all are healthy:
 
 ```bash
-docker compose up -d --build --wait            # Nginx on :8080
-NGINX_PORT=8088 docker compose up -d --build --wait   # if 8080 is taken (PowerShell: $env:NGINX_PORT="8088"; docker compose up -d --build --wait)
+docker compose up -d --build --wait            # Nginx on :8088, no settings needed
 ```
 
 ```bash
-curl -i -H "X-API-Key: demo-free-key-1" localhost:8080/api/orders/1   # X-Gateway-Id rotates gw-1, gw-2, gw-3
-curl -i -H "X-API-Key: demo-free-key-1" localhost:8080/api/demo/lua   # shared limit: 100 per hour across all gateways
-curl -X POST localhost:8081/chaos -H "Content-Type: application/json" -d '{"failureRate":1.0}'   # break backend-1
+curl -i -H "X-API-Key: demo-free-key-1" localhost:8088/api/orders/1   # X-Gateway-Id rotates gw-1, gw-2, gw-3
+curl -i -H "X-API-Key: demo-free-key-1" localhost:8088/api/demo/lua   # shared limit: 100 per hour across all gateways
+curl -X POST localhost:9081/chaos -H "Content-Type: application/json" -d '{"failureRate":1.0}'   # break backend-1
 docker compose down                                                   # stop and remove everything
 ```
 
 | Service | Host port | Notes |
 |---|---|---|
-| `nginx` | `${NGINX_PORT:-8080}` | The only way into the gateways; sets `X-Real-IP`; hides `/actuator` |
-| `gateway1/2/3` | none | Wait for Redis to be healthy; each lists a different backend first |
-| `backend-1/2/3` | 8081, 8082, 8083 | Published only for the chaos endpoint |
+| `nginx` | `${NGINX_PORT:-8088}` | The only way into the gateways; sets `X-Real-IP`; hides `/actuator` |
+| `gateway1/2/3` | none | Wait for Redis to be healthy; each lists a different backend first; Redis timeout `${REDIS_TIMEOUT:-250ms}` |
+| `backend-1/2/3` | 9081, 9082, 9083 | Published only for the chaos endpoint |
 | `redis` | none | Shared rate-limit state; persistence off |
+
+Compose's ports don't overlap with the local run (mock backend 8081, gateway 8090), so both can run at once. The full port map and step-by-step run guide are in [docs/TEST-MANUAL.md](docs/TEST-MANUAL.md).
 
 ## Race condition demo: naive vs Lua, across 3 gateways
 

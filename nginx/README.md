@@ -1,6 +1,6 @@
 # nginx/
 
-`nginx.conf` is the single entry point in front of the three gateways (plan section 13). Docker Compose publishes it on host port `${NGINX_PORT:-8080}`.
+`nginx.conf` is the single entry point in front of the three gateways (plan section 13). Docker Compose publishes it on host port `${NGINX_PORT:-8088}`. Inside its container Nginx listens on **80**, which k6 (`http://nginx`) relies on. Container ports can't clash with anything on the host, so keep it at 80.
 
 | Setting | Why |
 |---|---|
