@@ -88,7 +88,7 @@ k6 fires **1000 requests from 50 concurrent users through Nginx**, so the three 
 **Reproduce it** (stack running via the quick start; PowerShell: replace `$PWD/loadtest` with `${PWD}\loadtest`):
 
 ```bash
-# warm up the JVMs first (ignore this result)
+# warm up the JVMs first (ignore the result; repeat until "unexpected: 0", usually 2-3 runs after startup)
 docker run --rm --network rate-limiter-gateway_default -v "$PWD/loadtest:/scripts:ro" \
   -e API_KEY=demo-free-key-2 -e TARGET_PATH=/api/demo/lua grafana/k6 run --quiet /scripts/k6-script.js
 

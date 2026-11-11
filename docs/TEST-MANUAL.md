@@ -8,6 +8,130 @@ How to verify the rate-limiter gateway, phase by phase: automated tests first, t
 
 ---
 
+## 0. Run the whole application
+
+There are two ways to run it. Both were verified on 2026-11-11.
+
+| Mode | What runs | Use it for |
+|---|---|---|
+| **A. Docker Compose (recommended)** | Redis + 3 gateways + 3 mock backends + Nginx | The real distributed setup; demos; the accuracy test |
+| **B. Local, no Docker** | 1 mock backend + 1 gateway on your machine | Quick development and debugging in IntelliJ |
+
+Modes A and B both use port **8081**, so stop one before starting the other.
+
+### Mode A: full stack with Docker Compose
+
+**Step 1: start Docker Desktop** and wait until it shows "Engine running". Check:
+```powershell
+docker version          # must show a "Server" section, not an error
+```
+
+**Step 2: open PowerShell in the project root and check the ports are free:**
+```powershell
+cd D:\rate-limiter-gateway
+Get-NetTCPConnection -State Listen -LocalPort 8081,8082,8083,8088 -ErrorAction SilentlyContinue
+```
+Empty output means the ports are free. If something is listening, stop it first, e.g. an IntelliJ run or an old gateway.
+
+**Step 3: build and start everything.** Nginx goes on **8088** because Jenkins owns 8080 on this machine.
+```powershell
+$env:NGINX_PORT = "8088"
+docker compose up -d --build --wait
+```
+- The first build takes several minutes; later builds take about a minute.
+- `--wait` returns only when every service is healthy. Exit code 0 means ready.
+
+**Step 4: check it's up:**
+```powershell
+docker compose ps
+```
+- **Expected:** every service `healthy` (Nginx shows `Up`).
+- Gateways show only `8080/tcp` (internal); Nginx shows `0.0.0.0:8088->80/tcp`.
+
+**Step 5: warm up the JVMs.** Freshly started gateways can briefly exceed the 100 ms Redis timeout. Repeat until the summary says `unexpected: 0`, usually 2–3 runs:
+```powershell
+docker run --rm --network rate-limiter-gateway_default -v "${PWD}\loadtest:/scripts:ro" -e API_KEY=demo-free-key-2 grafana/k6 run --quiet /scripts/k6-script.js
+```
+
+**Step 6: use it.** All traffic goes through Nginx at **http://localhost:8088**:
+```powershell
+curl.exe -i -H "X-API-Key: demo-free-key-1" http://localhost:8088/api/orders/1      # 200; X-Gateway-Id rotates gw-1/2/3
+1..12 | % { curl.exe -s -o NUL -w "%{http_code} " -H "X-API-Key: demo-free-key-1" http://localhost:8088/api/orders/1 }   # 200s, then 429
+curl.exe -i -H "X-API-Key: demo-premium-key-3" http://localhost:8088/api/products   # premium tier
+curl.exe -i -X POST http://localhost:8088/auth/login                                # public route, 5/min per IP
+curl.exe -i http://localhost:8088/api/products                                      # 401 invalid_api_key
+```
+
+**Step 7: optional demos:**
+```powershell
+# Race condition demo: clear the demo buckets, then compare (see section 6.4)
+docker compose exec redis redis-cli DEL "rl:{demo-lua:free:user_1}:tb" "rl:{demo-naive:free:user_1}:nfw"
+docker run --rm --network rate-limiter-gateway_default -v "${PWD}\loadtest:/scripts:ro" -e TARGET_PATH=/api/demo/lua grafana/k6 run --quiet /scripts/k6-script.js
+docker run --rm --network rate-limiter-gateway_default -v "${PWD}\loadtest:/scripts:ro" -e TARGET_PATH=/api/demo/naive grafana/k6 run --quiet /scripts/k6-script.js
+
+# Chaos: make backend-1 fail, then switch it back
+curl.exe -X POST -H "Content-Type: application/json" -d '{\"failureRate\":1.0}' http://localhost:8081/chaos
+curl.exe -X POST -H "Content-Type: application/json" -d '{}' http://localhost:8081/chaos
+```
+
+**Step 8: look inside:**
+```powershell
+docker compose logs --tail 20 gateway1                                 # log lines show [correlationId] [clientId]
+docker compose exec redis redis-cli --scan --pattern "rl:*"            # rate-limit buckets in Redis
+docker compose exec redis redis-cli FLUSHALL                           # reset all limits
+```
+
+**Step 9: stop:**
+```powershell
+docker compose down                     # stops and removes all containers and the network
+Remove-Item Env:NGINX_PORT
+```
+To start again later, repeat steps 3–5.
+
+### Mode B: local, without Docker
+
+Uses the in-memory limiter (`LIMITER_STORE=MEMORY`), so no Redis is needed. Limits are per gateway process.
+
+**Step 1: make sure 8081 and 8090 are free** (stop the Compose stack first if it's running):
+```powershell
+docker compose down
+Get-NetTCPConnection -State Listen -LocalPort 8081,8090 -ErrorAction SilentlyContinue   # expect no output
+```
+
+**Step 2: terminal 1, the mock backend on 8081:**
+```powershell
+.\mvnw.cmd -f mock-backend\pom.xml spring-boot:run
+```
+
+**Step 3: terminal 2, the gateway on 8090.** It uses port 8090 from the gitignored `application-local.yml`:
+```powershell
+$env:LIMITER_STORE = "MEMORY"
+.\mvnw.cmd -f gateway\pom.xml spring-boot:run
+```
+
+**Step 4: check both are up, then use the gateway at http://localhost:8090:**
+```powershell
+curl.exe http://localhost:8081/actuator/health      # {"status":"UP"}
+curl.exe http://localhost:8090/actuator/health      # {"status":"UP"}
+curl.exe -i -H "X-API-Key: demo-free-key-1" http://localhost:8090/api/orders/42
+```
+**Expected:** `200`, `X-Gateway-Id: gateway-local`, `X-Served-By: localhost:8081`. Twelve quick calls give ten `200`s, then `429`.
+
+**Step 5: stop:** press `Ctrl+C` in both terminals, then `Remove-Item Env:LIMITER_STORE` in terminal 2.
+
+**Local with Redis instead of MEMORY:** start Redis first with `docker run -d --name rlg-redis -p 6379:6379 redis:7-alpine`, and skip `$env:LIMITER_STORE` in step 3. Stop Redis afterwards with `docker rm -f rlg-redis`.
+
+**From IntelliJ:** use the shared run configurations **MockBackendApplication** and **GatewayApplication**. The gateway defaults to the Redis store, so either start the Redis container above, or add `LIMITER_STORE=MEMORY` under *Edit Configurations → Environment variables*.
+
+### Run the tests
+
+```powershell
+.\mvnw.cmd -B -ntp clean verify      # everything; Redis tests need Docker running
+```
+Details in section 2.
+
+---
+
 ## 1. Prerequisites
 
 | Need | Why | Check |
@@ -182,7 +306,7 @@ Run the gateway with Redis (P2 setup, Redis option) and send a few P2-01 request
 Run with the stack up (P3-11):
 
 ```powershell
-# 1. warm up the JVMs (ignore this result)
+# 1. warm up the JVMs (ignore these results; repeat until "unexpected: 0", usually 2-3 runs after a fresh start)
 docker run --rm --network rate-limiter-gateway_default -v "${PWD}\loadtest:/scripts:ro" -e API_KEY=demo-free-key-2 grafana/k6 run --quiet /scripts/k6-script.js
 # 2. clear the demo buckets
 docker compose exec redis redis-cli DEL "rl:{demo-lua:free:user_1}:tb" "rl:{demo-naive:free:user_1}:nfw"
@@ -202,7 +326,7 @@ docker compose exec redis redis-cli GET "rl:{demo-naive:free:user_1}:nfw"
 
 **Reading the results:**
 - **Naive exactly 100** in one run isn't a failure: the race depends on timing. Run it again; over several runs it goes over.
-- **`unexpected` > 0 in the first runs after startup** means cold JVMs exceeded the 100 ms Redis timeout. Do the warm-up (step 1). Phase 5's fallback removes these errors.
+- **`unexpected` > 0 in the first runs after startup** means cold JVMs exceeded the 100 ms Redis timeout. One warm-up run isn't always enough: on 2026-11-11, right after `compose up`, one warm-up still left 10 (Lua) and 22 (naive) `500`s, and the next two rounds had 0. Repeat the warm-up until a run shows `unexpected: 0`. Phase 5's fallback removes these errors.
 
 ---
 
@@ -228,3 +352,4 @@ docker compose exec redis redis-cli GET "rl:{demo-naive:free:user_1}:nfw"
 | 2026-11-10 | 1 | 26/26 `InMemoryTokenBucketTest` | Concurrency test exactly 100, 20/20 |
 | 2026-11-10 | 2 | 106 gateway + 12 mock | 10×200 then 429 `Retry-After: 1`; 401/404/503 contract; spoofed client ID replaced |
 | 2026-11-11 | 3 | 137 gateway + 13 mock, Redis tests not skipped | Compose healthy in 68 s; rotation gw-1/2/3; spoofed `X-Real-IP` ignored; accuracy: Lua 100/100/100, naive 104/111/116 |
+| 2026-11-11 | 3 (re-run) | — | Fresh `compose up` (63 s); rotation, 10×200 → 429 `Retry-After: 1`, 401/404 contract OK; after 1 warm-up still 10/22 `500`s, after 2+ rounds 0; Lua 100/100/100, naive 108/105/108 |
