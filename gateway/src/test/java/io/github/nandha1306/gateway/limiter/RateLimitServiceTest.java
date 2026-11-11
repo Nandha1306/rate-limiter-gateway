@@ -2,80 +2,26 @@ package io.github.nandha1306.gateway.limiter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.github.nandha1306.gateway.limiter.local.InMemoryTokenBucket;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests how the rate limit service picks a limiter and key code for each store and algorithm, and separates buckets.
+ * Tests how the rate limit service picks a limiter and separates buckets.
  */
 class RateLimitServiceTest {
     private static final LimitSpec TWO_PER_HOUR = new LimitSpec(1, 3600, 2);
 
-    private final List<String> redisBucketKeys = new ArrayList<>();
-    private final List<String> naiveKeys = new ArrayList<>();
-    private final RateLimiter recordingRedisBucket = recording(redisBucketKeys);
-    private final RateLimiter recordingNaive = recording(naiveKeys);
-
-    private final RateLimitService memoryService =
-            new RateLimitService(LimiterStore.MEMORY, new InMemoryTokenBucket(), recordingRedisBucket, recordingNaive);
-    private final RateLimitService redisService =
-            new RateLimitService(LimiterStore.REDIS, new InMemoryTokenBucket(), recordingRedisBucket, recordingNaive);
+    private final RateLimitService service = new RateLimitService();
 
     /**
-     * Verifies that algorithm NONE never limits and never touches a limiter.
+     * Verifies that algorithm NONE never limits.
      */
     @Test
     void noneAlwaysAllows() {
         for (int i = 0; i < 50; i++) {
-            assertThat(redisService.check(request("open", "free", "user_1", Algorithm.NONE)).allowed()).isTrue();
+            assertThat(service.check(request("open", "free", "user_1", Algorithm.NONE)).allowed()).isTrue();
         }
-        assertThat(redisBucketKeys).isEmpty();
-        assertThat(naiveKeys).isEmpty();
-    }
-
-    /**
-     * Verifies that the Redis store sends the naive algorithm to the naive limiter with its own key code.
-     */
-    @Test
-    void redisStoreSendsNaiveToNaiveLimiter() {
-        redisService.check(request("demo-naive", "free", "user_1", Algorithm.NAIVE_FIXED_WINDOW));
-
-        assertThat(naiveKeys).containsExactly("rl:{demo-naive:free:user_1}:nfw");
-        assertThat(redisBucketKeys).isEmpty();
-    }
-
-    /**
-     * Verifies that the Redis store sends every other algorithm to the Lua token bucket, keyed with the token bucket
-     * code because that is the limiter actually running.
-     */
-    @Test
-    void redisStoreSendsOtherAlgorithmsToLuaTokenBucket() {
-        redisService.check(request("orders", "free", "user_1", Algorithm.TOKEN_BUCKET));
-        redisService.check(request("products", "free", "user_1", Algorithm.SLIDING_WINDOW_COUNTER));
-        redisService.check(request("login", "anonymous", "ip:10.0.0.1", Algorithm.SLIDING_WINDOW_LOG));
-        redisService.check(request("reports", "free", "user_1", Algorithm.FIXED_WINDOW));
-
-        assertThat(redisBucketKeys).containsExactly(
-                "rl:{orders:free:user_1}:tb",
-                "rl:{products:free:user_1}:tb",
-                "rl:{login:anonymous:ip:10.0.0.1}:tb",
-                "rl:{reports:free:user_1}:tb");
-        assertThat(naiveKeys).isEmpty();
-    }
-
-    /**
-     * Verifies that the memory store keeps every algorithm, including naive, in the in-memory bucket and never calls
-     * Redis.
-     */
-    @Test
-    void memoryStoreNeverCallsRedis() {
-        memoryService.check(request("orders", "free", "user_1", Algorithm.TOKEN_BUCKET));
-        memoryService.check(request("demo-naive", "free", "user_1", Algorithm.NAIVE_FIXED_WINDOW));
-
-        assertThat(redisBucketKeys).isEmpty();
-        assertThat(naiveKeys).isEmpty();
     }
 
     /**
@@ -85,9 +31,21 @@ class RateLimitServiceTest {
     void limitedAlgorithmEnforcesCapacity() {
         RateLimitRequest request = request("orders", "free", "user_1", Algorithm.TOKEN_BUCKET);
 
-        assertThat(memoryService.check(request).allowed()).isTrue();
-        assertThat(memoryService.check(request).allowed()).isTrue();
-        assertThat(memoryService.check(request).allowed()).isFalse();
+        assertThat(service.check(request).allowed()).isTrue();
+        assertThat(service.check(request).allowed()).isTrue();
+        assertThat(service.check(request).allowed()).isFalse();
+    }
+
+    /**
+     * Verifies that algorithms not built yet are still enforced with the token bucket rather than left open.
+     */
+    @Test
+    void unbuiltAlgorithmsFallBackToTokenBucket() {
+        RateLimitRequest request = request("products", "free", "user_1", Algorithm.SLIDING_WINDOW_COUNTER);
+
+        service.check(request);
+        service.check(request);
+        assertThat(service.check(request).allowed()).isFalse();
     }
 
     /**
@@ -96,22 +54,29 @@ class RateLimitServiceTest {
     @Test
     void bucketsAreSeparatedByRouteTierAndClient() {
         RateLimitRequest exhausted = request("orders", "free", "user_1", Algorithm.TOKEN_BUCKET);
-        memoryService.check(exhausted);
-        memoryService.check(exhausted);
-        assertThat(memoryService.check(exhausted).allowed()).isFalse();
+        service.check(exhausted);
+        service.check(exhausted);
+        assertThat(service.check(exhausted).allowed()).isFalse();
 
-        assertThat(memoryService.check(request("orders", "free", "user_2", Algorithm.TOKEN_BUCKET)).allowed()).isTrue();
-        assertThat(memoryService.check(request("products", "free", "user_1", Algorithm.TOKEN_BUCKET)).allowed())
-                .isTrue();
-        assertThat(memoryService.check(request("orders", "premium", "user_1", Algorithm.TOKEN_BUCKET)).allowed())
-                .isTrue();
+        assertThat(service.check(request("orders", "free", "user_2", Algorithm.TOKEN_BUCKET)).allowed()).isTrue();
+        assertThat(service.check(request("products", "free", "user_1", Algorithm.TOKEN_BUCKET)).allowed()).isTrue();
+        assertThat(service.check(request("orders", "premium", "user_1", Algorithm.TOKEN_BUCKET)).allowed()).isTrue();
     }
 
-    private static RateLimiter recording(List<String> keys) {
-        return (key, spec) -> {
+    /**
+     * Verifies that the limiter is called with the plan's key format and the token bucket code.
+     */
+    @Test
+    void usesTokenBucketKeyFormat() {
+        List<String> keys = new ArrayList<>();
+        RateLimitService recording = new RateLimitService((key, spec) -> {
             keys.add(key);
             return new RateLimitResult(true, 0, 0);
-        };
+        });
+
+        recording.check(request("orders", "free", "user_1", Algorithm.TOKEN_BUCKET));
+
+        assertThat(keys).containsExactly("rl:{orders:free:user_1}:tb");
     }
 
     private static RateLimitRequest request(String routeId, String tier, String clientId, Algorithm algorithm) {

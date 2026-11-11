@@ -83,7 +83,6 @@ public final class StubBackend {
         exchange.getResponseHeaders().add("X-Instance-Id", "stub-1");
         exchange.getResponseHeaders().add("X-Backend", "stub");
         exchange.getResponseHeaders().add("X-RateLimit-Remaining", "999");
-        exchange.getResponseHeaders().add("X-Gateway-Id", "spoofed-by-backend");
         exchange.getResponseHeaders().add("Keep-Alive", "timeout=5");
         exchange.getResponseHeaders().add("Set-Cookie", "a=1");
         exchange.getResponseHeaders().add("Set-Cookie", "b=2");

@@ -6,7 +6,6 @@ import io.github.nandha1306.gateway.limiter.Algorithm;
 import io.github.nandha1306.gateway.limiter.FailureMode;
 import java.net.URI;
 import java.time.Duration;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,13 +20,12 @@ class GatewayPropertiesBindingTest {
     private GatewayProperties properties;
 
     /**
-     * Verifies that the three starting routes bind in order with their paths, flags, algorithms and failure modes,
-     * followed by the two accuracy demo routes.
+     * Verifies that the three starting routes bind in order with their paths, flags, algorithms and failure modes.
      */
     @Test
     void bindsStartingRoutes() {
         assertThat(properties.routes()).extracting(RouteConfig::id)
-                .containsExactly("orders", "products", "login", "demo-naive", "demo-lua");
+                .containsExactly("orders", "products", "login");
 
         RouteConfig orders = properties.routes().get(0);
         assertThat(orders.pathPrefix()).isEqualTo("/api/orders");
@@ -63,28 +61,6 @@ class GatewayPropertiesBindingTest {
         RouteConfig login = properties.routes().get(2);
         assertThat(login.limitFor("anonymous").limit()).isEqualTo(5);
         assertThat(login.limitFor("anonymous").windowSeconds()).isEqualTo(60);
-    }
-
-    /**
-     * Verifies that the two accuracy demo routes share the same limit, 100 per hour so refill is negligible during a
-     * test, and differ only in algorithm.
-     */
-    @Test
-    void bindsAccuracyDemoRoutes() {
-        RouteConfig naive = properties.routes().get(3);
-        RouteConfig lua = properties.routes().get(4);
-
-        assertThat(naive.pathPrefix()).isEqualTo("/api/demo/naive");
-        assertThat(naive.algorithm()).isEqualTo(Algorithm.NAIVE_FIXED_WINDOW);
-        assertThat(lua.pathPrefix()).isEqualTo("/api/demo/lua");
-        assertThat(lua.algorithm()).isEqualTo(Algorithm.TOKEN_BUCKET);
-
-        for (RouteConfig demo : List.of(naive, lua)) {
-            assertThat(demo.publicRoute()).isFalse();
-            assertThat(demo.limitFor("free").limit()).isEqualTo(100);
-            assertThat(demo.limitFor("free").capacity()).isEqualTo(100);
-            assertThat(demo.limitFor("free").refillPerSecond()).isEqualTo(100.0 / 3600);
-        }
     }
 
     /**
