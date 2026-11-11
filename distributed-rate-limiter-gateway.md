@@ -519,13 +519,13 @@ Each phase has a **Done when** line. Don't move on until it's true.
 - **Done when:** curl shows 200s, then 429s with a correct Retry-After. ✅ (verified end to end; see docs/NOTES.md)
 
 ### Phase 3: Redis + multiple instances (Days 10-15), MVP
-- [ ] Redis client with the 100 ms timeout
-- [ ] Token bucket Lua script using Redis time; key format with hash tags
-- [ ] Naive limiter for the race demo
-- [ ] Minimal Docker Compose: Redis, 3 gateways, Nginx, 3 backends
-- [ ] Accuracy test through Nginx: naive over-admits, Lua doesn't. Screenshot both
-- [ ] Integration test with Testcontainers: three separate Redis clients in one JVM against one Redis. Total allowed equals capacity
-- **Done when:** `docker compose up` works and the accuracy test proves global limits. **Put the project on your resume now.**
+- [x] Redis client with the 100 ms timeout
+- [x] Token bucket Lua script using Redis time; key format with hash tags
+- [x] Naive limiter for the race demo
+- [x] Minimal Docker Compose: Redis, 3 gateways, Nginx, 3 backends
+- [x] Accuracy test through Nginx: naive over-admits, Lua doesn't. Screenshot both
+- [x] Integration test with Testcontainers: three separate Redis clients in one JVM against one Redis. Total allowed equals capacity
+- **Done when:** `docker compose up` works and the accuracy test proves global limits. **Put the project on your resume now.** ✅ (warm runs: Lua exactly 100 ×3, naive 104/111/116; see docs/NOTES.md)
 
 ### Phase 4: More algorithms (Days 16-19)
 - [ ] Sliding window log (unique members)

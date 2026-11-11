@@ -45,3 +45,26 @@ jobs:
           name: surefire-reports
           path: '**/target/surefire-reports/'
           retention-days: 7
+
+  docker-images:
+    name: Build Docker images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: Build gateway image
+        run: docker build -t rlg-gateway:ci gateway
+
+      - name: Build mock-backend image
+        run: docker build -t rlg-mock-backend:ci mock-backend
+
+      - name: Check images run as non-root
+        run: |
+          for image in rlg-gateway:ci rlg-mock-backend:ci; do
+            uid=$(docker run --rm --entrypoint id "$image" -u)
+            echo "$image runs as uid $uid"
+            test "$uid" != "0"
+          done
