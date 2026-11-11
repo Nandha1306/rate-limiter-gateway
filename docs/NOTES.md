@@ -395,3 +395,41 @@ Branch: `phase-3/redis-global-rate-limit`, cut from `main` after Phase 2 (`8d9c7
   - **Re-test:** connected on attempts 2, 3 and 2 of 10, and the first request after a restart → `200`.
   - **Lesson:** a retry count that barely works on a quiet dev machine has no margin once real startup contention appears.
 - **Mistake to avoid:** `redis-cli --latency-history` runs until stopped. Running it through a script hung the command until the task was killed.
+
+### Step 8: accuracy test (Phase 3 "Done when")
+- **`loadtest/k6-script.js`** (plan section 15):
+  - **Scenario `accuracy`:** 1000 requests from 50 VUs (`shared-iterations`).
+  - **Inputs:** `BASE_URL`, `API_KEY`, `TARGET_PATH` (deliberately not `PATH`, which clashes with the shell), `SCENARIO`.
+  - **Counting:** 200 and 429 separately, plus allowed requests per gateway (from `X-Gateway-Id`). 429 is declared an expected status, so k6 doesn't count blocks as failures.
+  - k6 runs as the `grafana/k6` container on the Compose network, hitting `http://nginx`.
+- **Method:**
+  - For each route, delete its bucket key in Redis, run k6, then read Redis's own state (Lua tokens left, naive counter) to cross-check k6's counts.
+  - 3 runs per route, then 3 more.
+- **Cold runs (1–3), right after `docker compose up`:**
+
+  | Run | Lua 200 / 429 / other | Naive 200 / 429 / other | Redis |
+  |---|---|---|---|
+  | 1 | 89 / 805 / **106** | 108 / 735 / **157** | Lua ~100 permits used; naive counter 113 |
+  | 2 | 100 / 892 / 8 | 106 / 890 / 4 | naive counter 107 |
+  | 3 | 100 / 900 / 0 | 104 / 893 / 3 | naive counter 104 |
+
+  - **The "other" responses were all `500`s** (Nginx logged 278). Every one was `QueryTimeoutException` ← `RedisCommandTimeoutException: Command timed out after 100 millisecond(s)` on `EVALSHA`, `GET` or `INCR`.
+  - **Redis wasn't slow.** `INFO commandstats` showed the Lua script averaging **0.14–0.16 ms inside Redis** and `GET`/`INCR` 5–12 µs. The 100 ms was lost on the client side: cold JVMs (JIT, first connections) hit with a 50-VU burst, on a laptop running 9 containers.
+  - **A timeout doesn't mean the command didn't run.** In run 1, Redis spent ~100 Lua tokens, but clients saw only 89 `200`s. Redis executed the script and granted the permit; the gateway gave up waiting at 100 ms and returned `500`. The same happened for naive (counter 113 vs 108 `200`s). The permit was used up but never delivered.
+  - **Even cold, Lua never let more than 100 through.**
+- **Warm runs (4–6), same stack:**
+
+  | Run | Lua allowed (per gateway) | Naive allowed (per gateway) | Unexpected | Redis |
+  |---|---|---|---|---|
+  | 4 | **100** (35/33/32) | **104** (35/34/35) | 0 | naive counter 104 |
+  | 5 | **100** (29/35/36) | **111** (37/37/37) | 0 | naive counter 111 |
+  | 6 | **100** (33/36/31) | **116** (39/38/39) | 0 | naive counter 116 |
+
+  - **Lua held exactly 100** every run, spread across all three gateways. Runs took 0.5–1.3 s, so the refill was ≤ 1.3 s × 100/3600 ≈ 0.04 tokens, and "burst + rate × elapsed" stays 100. Redis showed 0.014–0.034 tokens left, which is exactly that refill.
+  - **Naive went over in every run** (+4, +11, +16), and Redis's counter equals k6's count each time.
+  - **0 timeouts** while warm.
+- **Conclusions:**
+  - **Plan section 14's "Done when" is met:** `docker compose up` works, and the accuracy test proves the global limit.
+  - **For a fair demo, warm up first:** run once with another key (`demo-free-key-2`) and ignore the result. Measuring a cold JVM measures JIT and connection setup, not the limiter.
+  - **The cold-start `500`s are Phase 5's job.** With the Redis circuit breaker and local fallback, a timed-out call becomes a fallback decision instead of an error. The 100 ms timeout stays: it's what keeps a dead Redis from hanging every request.
+- **Screenshots:** the stack is left running so the two k6 summaries (Lua vs naive) can be captured for the README.

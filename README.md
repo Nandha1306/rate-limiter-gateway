@@ -2,7 +2,7 @@
 
 A rate-limiting API gateway that enforces per-client, per-route limits that stay **correct across multiple gateway instances**. It uses atomic Redis Lua scripts, per-route failure modes for Redis outages, per-backend circuit breakers, and consistent hashing for cache affinity.
 
-> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). The gateway now rate-limits through Redis: the Lua token bucket allowed exactly 100 of 1020 concurrent requests from 3 clients, while the naive limiter allowed 112–136. The full stack runs with one `docker compose up` (Redis, 3 gateways, 3 backends, Nginx), and the limit holds across all three gateways. Next: the concurrent accuracy test, naive vs Lua through Nginx. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
+> **Status: Phase 3 in progress** (Redis + Lua shared across 3 gateway instances in Docker). The gateway now rate-limits through Redis: the Lua token bucket allowed exactly 100 of 1020 concurrent requests from 3 clients, while the naive limiter allowed 112–136. **Phase 3 (MVP) done:** one `docker compose up` runs Redis, 3 gateways, 3 backends and Nginx. Under 1000 concurrent requests, the Lua limiter allows exactly 100 across all gateways, while a naive limiter over-admits (see the race condition demo below). Next: Phase 4, more algorithms. The full plan is in [distributed-rate-limiter-gateway.md](distributed-rate-limiter-gateway.md); decisions and bugs hit are logged in [docs/NOTES.md](docs/NOTES.md).
 
 ## Built so far
 
@@ -64,6 +64,41 @@ docker compose down                                                   # stop and
 | `gateway1/2/3` | none | Wait for Redis to be healthy; each lists a different backend first |
 | `backend-1/2/3` | 8081, 8082, 8083 | Published only for the chaos endpoint |
 | `redis` | none | Shared rate-limit state; persistence off |
+
+## Race condition demo: naive vs Lua, across 3 gateways
+
+Two routes share the same limit (100 requests per hour) and differ only in algorithm:
+- **`/api/demo/naive`:** reads the count, checks it, and increments it as three separate Redis calls.
+- **`/api/demo/lua`:** does read, refill, take and save in one atomic Lua script.
+
+k6 fires **1000 requests from 50 concurrent users through Nginx**, so the three gateways race each other.
+
+| Run (warm) | Lua token bucket | Naive fixed window |
+|---|---|---|
+| 1 | **100** allowed (gw-1 35 · gw-2 33 · gw-3 32) | **104** allowed |
+| 2 | **100** allowed (29 · 35 · 36) | **111** allowed |
+| 3 | **100** allowed (33 · 36 · 31) | **116** allowed |
+
+- The Lua limit holds exactly, even though no single gateway saw all the traffic.
+- The naive limiter over-admits by 4–16%. Several gateways read "99", all pass the check, and all increment.
+- Redis's own counters match these numbers. Measured on a laptop with Docker Desktop; exact naive numbers vary run to run.
+
+**Reproduce it** (stack running via the quick start; PowerShell: replace `$PWD/loadtest` with `${PWD}\loadtest`):
+
+```bash
+# warm up the JVMs first (ignore this result)
+docker run --rm --network rate-limiter-gateway_default -v "$PWD/loadtest:/scripts:ro" \
+  -e API_KEY=demo-free-key-2 -e TARGET_PATH=/api/demo/lua grafana/k6 run --quiet /scripts/k6-script.js
+
+# measure: clear the demo buckets, then run each route
+docker compose exec redis redis-cli DEL "rl:{demo-lua:free:user_1}:tb" "rl:{demo-naive:free:user_1}:nfw"
+docker run --rm --network rate-limiter-gateway_default -v "$PWD/loadtest:/scripts:ro" \
+  -e TARGET_PATH=/api/demo/lua grafana/k6 run --quiet /scripts/k6-script.js
+docker run --rm --network rate-limiter-gateway_default -v "$PWD/loadtest:/scripts:ro" \
+  -e TARGET_PATH=/api/demo/naive grafana/k6 run --quiet /scripts/k6-script.js
+```
+
+**Why warm up:** right after startup, cold JVMs occasionally take longer than the gateway's 100 ms Redis timeout, and those requests fail with `500`. Inside Redis the script takes about 0.15 ms. Phase 5 adds a fallback so a timeout no longer means an error. Even in cold runs, the Lua route never allowed more than 100.
 
 ## Docker images
 

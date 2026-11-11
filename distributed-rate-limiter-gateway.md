@@ -523,9 +523,9 @@ Each phase has a **Done when** line. Don't move on until it's true.
 - [x] Token bucket Lua script using Redis time; key format with hash tags
 - [x] Naive limiter for the race demo
 - [x] Minimal Docker Compose: Redis, 3 gateways, Nginx, 3 backends
-- [ ] Accuracy test through Nginx: naive over-admits, Lua doesn't. Screenshot both
+- [x] Accuracy test through Nginx: naive over-admits, Lua doesn't. Screenshot both
 - [x] Integration test with Testcontainers: three separate Redis clients in one JVM against one Redis. Total allowed equals capacity
-- **Done when:** `docker compose up` works and the accuracy test proves global limits. **Put the project on your resume now.**
+- **Done when:** `docker compose up` works and the accuracy test proves global limits. **Put the project on your resume now.** ✅ (warm runs: Lua exactly 100 ×3, naive 104/111/116; see docs/NOTES.md)
 
 ### Phase 4: More algorithms (Days 16-19)
 - [ ] Sliding window log (unique members)
