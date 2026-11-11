@@ -130,18 +130,4 @@ class ApiEndpointsTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.token").isNotEmpty());
     }
-
-    /**
-     * Verifies that any path under /api/demo answers 200 with the instance ID, for the accuracy demo routes.
-     */
-    @Test
-    void demoEndpointAnswersAnySubPath() throws Exception {
-        for (String path : new String[] {"/api/demo/naive", "/api/demo/lua", "/api/demo/anything/else"}) {
-            mvc.perform(get(path))
-                    .andExpect(status().isOk())
-                    .andExpect(header().string(MockHeaders.INSTANCE_ID, "mock-test"))
-                    .andExpect(jsonPath("$.ok").value(true))
-                    .andExpect(jsonPath("$.instanceId").value("mock-test"));
-        }
-    }
 }

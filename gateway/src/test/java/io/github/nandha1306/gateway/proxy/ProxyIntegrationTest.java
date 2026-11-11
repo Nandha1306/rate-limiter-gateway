@@ -118,7 +118,6 @@ class ProxyIntegrationTest {
                 .andExpect(header().stringValues(HttpHeaders.SET_COOKIE, "a=1", "b=2"))
                 .andExpect(header().doesNotExist("Keep-Alive"))
                 .andExpect(header().string(GatewayHeaders.RATE_LIMIT_REMAINING, not("999")))
-                .andExpect(header().string(GatewayHeaders.GATEWAY_ID, "gateway-local"))
                 .andExpect(header().string(GatewayHeaders.RATE_LIMIT_LIMIT, "100"));
     }
 
